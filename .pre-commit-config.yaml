@@ -1,0 +1,26 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff lint
+        entry: python -m ruff check
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: Ruff format
+        entry: python -m ruff format --check
+        language: system
+        types: [python]
+
+      - id: test-docstrings
+        name: GIVEN/WHEN/THEN test docstrings
+        entry: python tools/check_test_docstrings.py
+        language: system
+        pass_filenames: false
+
+      - id: mypy
+        name: Strict mypy
+        entry: python -m mypy src tests
+        language: system
+        pass_filenames: false

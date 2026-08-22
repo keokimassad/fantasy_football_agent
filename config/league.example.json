@@ -1,0 +1,26 @@
+{
+  "league_name": "Example League",
+  "teams": 10,
+  "draft": {
+    "type": "snake"
+  },
+  "roster": {
+    "QB": 1,
+    "WR": 2,
+    "RB": 2,
+    "TE": 1,
+    "FLEX": 1,
+    "K": 1,
+    "DEF": 1,
+    "BENCH": 6,
+    "IR": 2
+  },
+  "flex_positions": [
+    "RB",
+    "WR",
+    "TE"
+  ],
+  "scoring": {
+    "receptions": 0.5
+  }
+}

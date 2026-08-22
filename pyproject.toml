@@ -1,0 +1,123 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "fantasy_football_agent"
+version = "0.1.0"
+description = "Agentic fantasy football assistant with deterministic draft analysis and Yahoo Fantasy integration."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Keoki Massad" }
+]
+dependencies = [
+    "yahoo-fantasy-api",
+    "yahoo-oauth",
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "mypy",
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+
+[project.scripts]
+ff-draft = "fantasy_football_agent.cli.draft_analyzer:main"
+ff-draft-update = "fantasy_football_agent.cli.draft_updater:main"
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.setuptools.package-data]
+fantasy_football_agent = ["py.typed"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "unit: deterministic unit tests",
+    "integration: tests spanning system or external boundaries",
+    "yahoo: tests requiring Yahoo Fantasy integration",
+]
+
+
+[tool.coverage.run]
+branch = true
+source = ["fantasy_football_agent"]
+
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 90
+
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "SIM",
+    "C4",
+    "RUF",
+    "D",
+]
+ignore = [
+    "D104",
+]
+
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/test_*.py" = [
+    "D205",
+    "D212",
+    "D415",
+]
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+pretty = true
+mypy_path = "$MYPY_CONFIG_FILE_DIR/src"
+
+[[tool.mypy.overrides]]
+module = [
+    "yahoo_fantasy_api",
+    "yahoo_fantasy_api.*",
+    "yahoo_oauth",
+    "yahoo_oauth.*",
+]
+ignore_missing_imports = true
