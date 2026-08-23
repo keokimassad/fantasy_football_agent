@@ -31,6 +31,7 @@ dev = [
 [project.scripts]
 ff-draft = "fantasy_football_agent.cli.draft_analyzer:main"
 ff-draft-update = "fantasy_football_agent.cli.draft_updater:main"
+ff-draft-new = "fantasy_football_agent.cli.draft_creator:main"
 
 
 [tool.setuptools.packages.find]
