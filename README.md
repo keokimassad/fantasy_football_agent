@@ -116,6 +116,33 @@ Rank,ADP,Player Name,Position,Team,Bye,% Drafted,Yahoo Player ID,Manual - Tier
 `Yahoo Player ID` is the preferred stable identity when available. `Manual - Tier` is
 optional and can be populated as tiers are assigned.
 
+## Starting a Draft Session
+
+Create a fresh mock draft:
+
+```bash
+ff-draft-new --type mock --slot 4 --workspace .
+```
+
+Create the real league draft once your actual draft slot is known:
+
+```bash
+ff-draft-new --type actual --slot <YOUR_SLOT> --workspace .
+```
+
+A readable timestamp-based draft ID is generated automatically. An explicit ID may
+instead be supplied with `--draft-id`.
+
+The command will not overwrite an existing active `draft_state.json` unless
+`--replace` is explicitly supplied:
+
+```bash
+ff-draft-new --type mock --slot 7 --replace --workspace .
+```
+
+Draft rankings, manual tiers, and league configuration are not reset when a new
+draft session is created.
+
 ## Draft Analysis
 
 Run the analyzer from the workspace containing `config/` and `data/`:
