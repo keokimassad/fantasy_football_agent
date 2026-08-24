@@ -14,6 +14,7 @@ from fantasy_football_agent.draft.models import (
 )
 from fantasy_football_agent.draft.session import (
     record_current_pick,
+    record_resolved_current_pick,
     resolve_player,
     save_draft_state,
     undo_last_pick,
@@ -335,3 +336,38 @@ def test_undo_last_pick_rejects_empty_draft_state(
 
     assert draft_state.picks == []
     assert draft_state.current_overall_pick == original_pick
+
+
+def test_record_resolved_current_pick_records_without_name_resolution(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: a player whose identity has already been resolved by an external adapter
+    WHEN: the resolved player is recorded at the current selection
+    THEN: deterministic draft metadata is derived and state advances
+    """
+    state = make_draft_state(current_overall_pick=11)
+    player = make_player(
+        name="Jahmyr Gibbs",
+        position="RB",
+        yahoo_player_id=40059,
+    )
+
+    recorded = record_resolved_current_pick(
+        state,
+        league_config,
+        player,
+    )
+
+    assert recorded == DraftPick(
+        overall=11,
+        round=2,
+        pick_in_round=1,
+        team_id=10,
+        player="Jahmyr Gibbs",
+        position="RB",
+        yahoo_player_id=40059,
+    )
+    assert state.current_overall_pick == 12

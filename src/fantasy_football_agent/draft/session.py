@@ -6,7 +6,7 @@ from difflib import get_close_matches
 from pathlib import Path
 
 from .models import DraftPick, DraftState, LeagueConfig, Player
-from .state import team_for_overall_pick
+from .state import get_round_and_pick_in_round, team_for_overall_pick
 
 
 def resolve_player(
@@ -100,10 +100,10 @@ def record_current_pick(
         raise ValueError(f"{player.name} has already been drafted.")
 
     overall_pick = state.current_overall_pick
-
-    round_number = ((overall_pick - 1) // league.teams) + 1
-
-    pick_in_round = ((overall_pick - 1) % league.teams) + 1
+    round_number, pick_in_round = get_round_and_pick_in_round(
+        overall_pick,
+        league.teams,
+    )
 
     team_id = team_for_overall_pick(
         overall_pick,
@@ -123,6 +123,56 @@ def record_current_pick(
     state.picks.append(draft_pick)
 
     # Advance the draft to the next selection.
+    state.current_overall_pick += 1
+
+    return draft_pick
+
+
+def record_resolved_current_pick(
+    state: DraftState,
+    league: LeagueConfig,
+    player: Player,
+) -> DraftPick:
+    """Record an already-resolved player at the state's current overall pick.
+
+    Args:
+        state: Draft state to mutate.
+        league: League configuration used to derive snake-draft metadata.
+        player: Ranked player whose identity has already been resolved.
+
+    Returns:
+        The draft-pick record added to the state.
+
+    Raises:
+        ValueError: If the player has already been drafted.
+    """
+    already_drafted = any(pick.yahoo_player_id == player.yahoo_player_id for pick in state.picks)
+
+    if already_drafted:
+        raise ValueError(f"{player.name} has already been drafted.")
+
+    overall_pick = state.current_overall_pick
+    round_number, pick_in_round = get_round_and_pick_in_round(
+        overall_pick,
+        league.teams,
+    )
+
+    team_id = team_for_overall_pick(
+        overall_pick,
+        league.teams,
+    )
+
+    draft_pick = DraftPick(
+        overall=overall_pick,
+        round=round_number,
+        pick_in_round=pick_in_round,
+        team_id=team_id,
+        player=player.name,
+        position=player.position,
+        yahoo_player_id=player.yahoo_player_id,
+    )
+
+    state.picks.append(draft_pick)
     state.current_overall_pick += 1
 
     return draft_pick
