@@ -76,6 +76,17 @@ def validate_draft_state(
         raise ValueError("Current overall pick must be at least 1.")
 
 
+def get_round_and_pick_in_round(
+    overall_pick: int,
+    team_count: int,
+) -> tuple[int, int]:
+    """Return the round and pick-within-round for an overall selection."""
+    round_number = ((overall_pick - 1) // team_count) + 1
+    pick_in_round = ((overall_pick - 1) % team_count) + 1
+
+    return round_number, pick_in_round
+
+
 def team_for_overall_pick(overall_pick: int, teams: int) -> int:
     """Return the draft slot that owns an overall pick in a snake draft.
 
