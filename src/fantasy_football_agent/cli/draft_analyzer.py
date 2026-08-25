@@ -14,6 +14,11 @@ from fantasy_football_agent.draft.rankings import (
     next_position_tier,
     remaining_in_player_tier,
 )
+from fantasy_football_agent.draft.recommendations import (
+    CandidateRecommendation,
+    build_candidate_recommendations,
+    evaluate_candidates,
+)
 from fantasy_football_agent.draft.state import (
     get_active_lookahead_window,
     get_all_team_open_starter_slots,
@@ -42,6 +47,46 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _print_candidate_recommendations(
+    recommendations: list[CandidateRecommendation],
+) -> None:
+    """Print a compact deterministic shortlist for the current draft decision."""
+    print()
+    print("Deterministic shortlist:")
+
+    if not recommendations:
+        print("  No available candidates.")
+        return
+
+    for index, recommendation in enumerate(recommendations, start=1):
+        evaluation = recommendation.evaluation
+        player = evaluation.player
+
+        tier_display = f"T{player.manual_tier}" if player.manual_tier is not None else "T-"
+        adp_display = f"{player.adp:.1f}" if player.adp is not None else "-"
+        tier_remaining_display = (
+            str(evaluation.tier_remaining) if evaluation.tier_remaining is not None else "-"
+        )
+        next_tier_display = f"T{evaluation.next_tier}" if evaluation.next_tier is not None else "-"
+        signals_display = ", ".join(recommendation.signals) if recommendation.signals else "-"
+
+        print(
+            f"  {index}. {player.name} "
+            f"| {player.position} {tier_display} "
+            f"| Priority {recommendation.priority.value} "
+            f"| Roster utility {recommendation.roster_utility.value} "
+            f"| Loss cost {recommendation.loss_cost.value} "
+            f"| Return risk {recommendation.return_risk.value}"
+        )
+        print(
+            f"     Rank #{player.rank} | ADP {adp_display} "
+            f"| Fit {evaluation.roster_fit.value} "
+            f"| Tier left {tier_remaining_display} "
+            f"| Next {next_tier_display}"
+        )
+        print(f"     Why: {signals_display}")
+
+
 def main() -> None:
     """Load the active workspace and print a deterministic draft analysis."""
     args = _parse_args()
@@ -60,6 +105,17 @@ def main() -> None:
         state,
     )
 
+    candidate_evaluations = evaluate_candidates(
+        available,
+        state,
+        league,
+    )
+
+    recommendations = build_candidate_recommendations(
+        candidate_evaluations,
+        limit=5,
+    )
+
     print()
     print("=== Fantasy Draft Assistant ===")
     print(f"League: {league.league_name}")
@@ -74,6 +130,8 @@ def main() -> None:
     )
 
     print(f"Team currently drafting: {drafting_team}")
+
+    _print_candidate_recommendations(recommendations)
 
     my_roster = get_team_roster(
         state,

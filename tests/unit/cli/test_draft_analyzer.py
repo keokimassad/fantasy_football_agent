@@ -95,6 +95,15 @@ def test_main_reports_waiting_draft_context_from_explicit_workspace(
     assert "League: Test League" in output
     assert "Current overall pick: 5" in output
     assert "Team currently drafting: 5" in output
+    assert "Deterministic shortlist:" in output
+    assert "1. Top Running Back | RB T1" in output
+    assert "Priority HIGH" in output
+    assert "Return risk HIGH" in output
+    assert "Fit DIRECT_STARTER" in output
+    assert "Tier left 1" in output
+    assert "Next T3" in output
+    assert "LAST_IN_TIER" in output
+    assert "LARGE_TIER_DROP" in output
     assert "No players drafted yet." in output
     assert "Top Running Back" in output
     assert "Flags LAST_IN_TIER,LARGE_TIER_DROP" in output
@@ -151,6 +160,12 @@ def test_main_reports_on_clock_turn_with_empty_lookahead_and_untiered_player(
 
     output = capsys.readouterr().out
     assert "Team currently drafting: 10" in output
+    assert "Deterministic shortlist:" in output
+    assert "1. Untiered Player | TE T-" in output
+    assert "Return risk UNKNOWN" in output
+    assert "Fit DIRECT_STARTER" in output
+    assert "Tier left -" in output
+    assert "Next -" in output
     assert "WR: My Wide Receiver (Pick 1)" in output
     assert "Untiered Player" in output
     assert "ADP -" in output
