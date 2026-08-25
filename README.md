@@ -1,54 +1,161 @@
 # Fantasy Football Agent
 
-A Python 3.12 fantasy-football draft assistant built around a deterministic-first architecture. Draft state, roster accounting, player availability, tier analysis, snake-draft lookahead, and Yahoo draft synchronization are handled by deterministic code so future AI agents can reason over trusted facts instead of becoming the source of truth.
+A Python 3.12 fantasy-football draft assistant built around a deterministic-first architecture.
 
-The project is currently **mock-draft ready**: a Yahoo mock draft can be initialized, copied draft-chat selections can be synchronized into local state, and the updated draft can be analyzed from the command line.
+The project keeps draft state, player availability, roster accounting, tier analysis, pick
+lookahead, opponent exposure, and candidate recommendations deterministic and testable.
+Yahoo Fantasy is treated as an integration boundary, while future news/context and AI layers
+will reason over structured outputs rather than owning factual draft state.
 
-## What It Does
+## Core Principle
 
-- Loads and validates league configuration and persisted draft state.
-- Creates fresh mock or actual draft sessions with an explicit draft slot.
-- Models snake-draft ownership, including round turns.
-- Tracks team rosters and open starter slots, including FLEX overflow.
-- Loads ranked players and determines which players remain available.
-- Uses Yahoo Player ID as the preferred stable player identity.
-- Supports optional manual player tiers alongside Yahoo rank and ADP.
-- Calculates tier depth, tier drops, scarcity flags, and tier coverage.
-- Builds active lookahead windows between the current pick and the user's next turn.
-- Estimates position exposure from opponents drafting inside that window.
-- Parses copied Yahoo draft-chat selections.
-- Resolves Yahoo-style abbreviated player names using position, NFL team, bye week, and Yahoo Player ID.
-- Safely reconciles copied Yahoo history with existing local draft state.
-- Detects overlapping history, missing-pick gaps, conflicts, and ambiguous player identities.
-- Persists successful new selections incrementally so later failures do not discard earlier work.
-- Supports manual pick entry and undo.
-- Isolates Yahoo OAuth/client code behind a dedicated integration boundary.
-- Exposes draft creation, synchronization/update, and analysis through command-line entry points.
+> **The agent may reason about draft state, but it should not invent draft state.**
+
+The deterministic engine remains the source of truth for:
+
+- draft order;
+- player availability;
+- roster construction;
+- persisted selections;
+- tier evidence;
+- pick windows;
+- opponent exposure;
+- recommendation evidence.
+
+Future AI functionality will consume those results rather than recreate them.
+
+## Current Capabilities
+
+- Load and validate league configuration and persisted draft state.
+- Model snake-draft ownership, including turn picks.
+- Track rosters and open starter slots, including FLEX overflow.
+- Load Yahoo-derived rankings with:
+  - Yahoo rank;
+  - ADP;
+  - player name;
+  - position;
+  - team;
+  - bye;
+  - drafted percentage;
+  - Yahoo Player ID;
+  - manual tier.
+- Determine available players using Yahoo Player ID as the preferred stable identity.
+- Calculate:
+  - tier depth;
+  - next position tier;
+  - last-in-tier conditions;
+  - tier drops;
+  - scarcity flags;
+  - tier coverage.
+- Build draft lookahead windows between the current pick and future user picks.
+- Estimate opponent position exposure inside those windows.
+- Evaluate candidates deterministically.
+- Produce a compact top-five recommendation shortlist.
+- Distinguish:
+  - roster fit;
+  - roster utility;
+  - return risk;
+  - loss cost;
+  - decision priority.
+- Record draft picks locally.
+- Undo the most recent pick.
+- Parse copied Yahoo Draft Chat selections.
+- Safely reconcile overlapping Yahoo draft history.
+- Detect synchronization gaps and conflicts.
+- Surface ambiguous Yahoo player identities instead of guessing.
+- Authenticate to Yahoo Fantasy through a dedicated OAuth/client boundary.
+- Expose the workflow through installable CLI commands.
 
 ## Architecture
 
 ```text
-Future AI / agent layer
-        |
-        | recommendations, tradeoffs, explanation
-        v
-Deterministic draft engine
-        |
-        | draft state, roster accounting, availability,
-        | tiers, lookahead, persistence
-        v
-Yahoo integration boundary
-        |
-        | copied draft chat and optional API access
-        v
-Yahoo Fantasy
+Yahoo Draft Chat / future Yahoo API
+              |
+              | observed selections
+              v
+          DraftState
+              |
+              | availability
+              | roster accounting
+              | tiers
+              | snake order
+              | lookahead
+              | opponent exposure
+              v
+      CandidateEvaluation
+              |
+              | roster fit
+              | roster utility
+              | tier loss cost
+              | market return risk
+              | deterministic signals
+              v
+  Deterministic Recommendations
+              |
+              | structured decision evidence
+              v
+ Future player-news context + AI agent
 ```
 
-The core rule is:
+Yahoo-specific code remains outside the core draft engine so deterministic behavior can be
+tested without network access.
 
-> **AI may reason about draft state, but it should not invent draft state.**
+## Recommendation Model
 
-Yahoo-specific parsing, synchronization, authentication, and external-service behavior remain outside the deterministic draft engine. This keeps the core testable without network access and allows additional data sources later.
+The recommendation layer intentionally keeps several concepts separate.
+
+### Roster Fit
+
+Describes where a candidate can fit on the current roster:
+
+- `DIRECT_STARTER`
+- `FLEX`
+- `DEPTH`
+
+### Roster Utility
+
+Describes how useful that roster fit is **right now**.
+
+For example, a second TE may technically fit in FLEX, but its immediate roster utility can
+be lower while dedicated RB or WR starter slots remain open.
+
+### Return Risk
+
+Estimates whether a player is likely to disappear before the user's following pick.
+
+Inputs include:
+
+- player ADP relative to the decision and following picks;
+- opponent positional exposure inside the return window.
+
+This is a deterministic heuristic, not a probability model.
+
+### Loss Cost
+
+Estimates how costly it would be if a player disappeared.
+
+Inputs include:
+
+- roster fit;
+- `LAST_IN_TIER`;
+- known next-tier information;
+- large tier drops.
+
+A player can have high loss cost but low return risk, meaning the player is valuable to
+preserve but may still be safe to wait on.
+
+### Decision Priority
+
+Combines roster utility, loss cost, and return risk into an explainable urgency category.
+
+### Manual Tiers
+
+Manual tiers remain **position-relative**.
+
+A Tier 1 RB is not assumed to have the same universal value as a Tier 1 WR. The engine does
+not convert tiers into an arbitrary cross-position numerical score.
+
+Yahoo rank remains the deterministic cross-position baseline and tie-breaker.
 
 ## Project Structure
 
@@ -66,18 +173,24 @@ fantasy_football_agent/
 │   └── check_yahoo_connection.py
 ├── src/
 │   └── fantasy_football_agent/
+│       ├── __init__.py
 │       ├── application_paths.py
+│       ├── py.typed
 │       ├── cli/
+│       │   ├── __init__.py
 │       │   ├── draft_analyzer.py
 │       │   ├── draft_creator.py
 │       │   └── draft_updater.py
 │       ├── draft/
+│       │   ├── __init__.py
 │       │   ├── analysis.py
 │       │   ├── models.py
 │       │   ├── rankings.py
+│       │   ├── recommendations.py
 │       │   ├── session.py
 │       │   └── state.py
 │       └── yahoo/
+│           ├── __init__.py
 │           ├── draft_chat.py
 │           ├── draft_sync.py
 │           ├── yahoo_client.py
@@ -85,24 +198,26 @@ fantasy_football_agent/
 ├── tests/
 ├── tools/
 │   └── check_test_docstrings.py
+├── .gitignore
 ├── .pre-commit-config.yaml
 ├── DEVELOPMENT.md
 ├── pyproject.toml
 └── README.md
 ```
 
-Local runtime files such as `oauth2.json`, the active league configuration, current draft state, and full ranking data are intentionally ignored by Git.
+Local/private files such as real league configuration, current draft state, full rankings,
+raw Yahoo data, and OAuth credentials are intentionally excluded from Git.
 
 ## Setup
 
-Create and activate a Python 3.12 virtual environment:
+Create and activate a Python 3.12 environment:
 
 ```bash
 python -m venv venv
 source venv/bin/activate
 ```
 
-Install the project and development dependencies:
+Install the project in editable mode with development dependencies:
 
 ```bash
 python -m pip install -e ".[dev]"
@@ -112,10 +227,9 @@ Create local working copies of the example inputs:
 
 ```bash
 cp config/league.example.json config/league.json
+cp data/draft_state.example.json data/draft_state.json
 cp data/yahoo_rankings.example.csv data/yahoo_rankings_2026.csv
 ```
-
-A draft-state file should normally be created with `ff-draft-new` rather than copied manually.
 
 The ranking CSV schema is:
 
@@ -123,122 +237,143 @@ The ranking CSV schema is:
 Rank,ADP,Player Name,Position,Team,Bye,% Drafted,Yahoo Player ID,Manual - Tier
 ```
 
-`Yahoo Player ID` is the preferred stable identity when available. `Manual - Tier` is optional and represents the user's own position-relative player tiers.
+## CLI Commands
 
-## Starting a Draft Session
+The installed entry points are:
 
-Create a fresh mock draft:
-
-```bash
-ff-draft-new --type mock --slot 4 --workspace .
+```text
+ff-draft
+ff-draft-update
+ff-draft-new
 ```
 
-Create the actual league draft once the draft slot is known:
+### Create a Draft Session
+
+Create a mock session after Yahoo reveals the slot:
 
 ```bash
-ff-draft-new --type actual --slot <YOUR_SLOT> --workspace .
+ff-draft-new --type mock --slot <SLOT> --workspace .
 ```
 
-A timestamp-based draft ID is generated automatically. An explicit ID may instead be supplied:
+Create the actual league session once the real slot is known:
 
 ```bash
-ff-draft-new \
-  --type mock \
-  --slot 4 \
-  --draft-id mock-test-01 \
-  --workspace .
+ff-draft-new --type actual --slot <SLOT> --workspace .
 ```
 
-An existing active `draft_state.json` is protected unless replacement is explicit:
+Replace an existing active session explicitly:
 
 ```bash
-ff-draft-new --type mock --slot 7 --replace --workspace .
+ff-draft-new   --type mock   --slot <SLOT>   --replace   --workspace .
 ```
 
-Creating a new session resets draft-specific state only. League configuration, rankings, and manual tiers remain reusable across drafts.
+A custom draft ID may be supplied with `--draft-id`.
 
-## Synchronizing a Yahoo Draft
+## Yahoo Draft-Chat Synchronization
 
-The intended mock-draft workflow uses copied Yahoo draft-chat history as an input source.
-
-Copy a recent portion of the Yahoo draft chat, then synchronize it:
+Copy a recent Yahoo Draft Chat selection range and pipe the clipboard into the updater:
 
 ```bash
 pbpaste | ff-draft-update --yahoo-chat --workspace .
 ```
 
-The synchronizer processes numeric Yahoo selection blocks and ignores unrelated chat text. It supports overlapping pasted history, so copying a generous recent range is safe.
+The synchronizer:
 
-For each parsed selection:
+- ignores arbitrary non-selection chat;
+- verifies matching overlapping history;
+- records the next expected selections;
+- persists successful picks incrementally;
+- stops on gaps or conflicts;
+- resolves exact player identities from ranking data;
+- prompts when Yahoo abbreviations are genuinely ambiguous.
 
-- an already-recorded pick is verified against local state;
-- the exact next pick is resolved and recorded;
-- a future pick that skips expected history produces a synchronization error;
-- a conflicting historical pick stops synchronization rather than overwriting state;
-- ambiguous Yahoo abbreviations require an explicit user choice;
-- successful new picks are saved immediately before processing later selections.
-
-Interactive ambiguity choices are read from the terminal even when Yahoo chat is piped through standard input.
+Using a recent overlapping range is intentional. Already-recorded selections can be safely
+verified before new picks are added.
 
 ## Draft Analysis
 
-Run the analyzer from the workspace containing `config/` and `data/`:
+Run:
 
 ```bash
 ff-draft --workspace .
 ```
 
-The report includes:
+The report begins with a compact deterministic shortlist.
 
-- current overall pick and drafting team;
+Example shape:
+
+```text
+Deterministic shortlist:
+  1. Candidate | WR T3 | Priority HIGH | Roster utility HIGH | Loss cost HIGH | Return risk MEDIUM
+     Rank #38 | ADP 43.3 | Fit DIRECT_STARTER | Tier left 1 | Next T4
+     Why: FILLS_DIRECT_STARTER, LAST_IN_TIER, RETURN_WINDOW_POSITION_PRESSURE
+```
+
+The detailed report also includes:
+
+- draft/session metadata;
 - the user's roster;
 - top available players;
-- Yahoo rank and ADP;
-- manual tiers and tier-scarcity signals;
+- tier scarcity;
 - tier coverage;
 - team roster construction;
 - open starter slots;
-- active snake-draft lookahead;
-- opponent pick opportunities; and
-- position exposure before the user's next selection.
+- active lookahead;
+- opponent lookahead;
+- position exposure before the following user pick.
 
-The current live workflow is intentionally two steps:
+## Manual Draft Updates
 
-```bash
-pbpaste | ff-draft-update --yahoo-chat --workspace .
-ff-draft --workspace .
-```
-
-This keeps synchronization and analysis loosely coupled while the live mock-draft UX is being evaluated.
-
-## Manual Pick Updates
-
-Manual entry remains available as a fallback or debugging path.
-
-Record one or more players by name or Yahoo Player ID:
+Record a player manually:
 
 ```bash
 ff-draft-update "Player Name" --workspace .
-ff-draft-update 12345 "Another Player" --workspace .
 ```
 
-With no player arguments, the updater prompts interactively until a blank line is entered:
+Record by Yahoo Player ID:
+
+```bash
+ff-draft-update 12345 --workspace .
+```
+
+Run interactively:
 
 ```bash
 ff-draft-update --workspace .
 ```
 
-Undo the most recently recorded selection:
+Undo the most recent pick:
 
 ```bash
 ff-draft-update --undo --workspace .
 ```
 
+## Fast macOS Mock Workflow
+
+A small shell helper can synchronize copied Yahoo chat and immediately rerun analysis:
+
+```bash
+ffmock() {
+  pbpaste | ff-draft-update --yahoo-chat --workspace .
+  ff-draft --workspace .
+}
+```
+
+Typical mock workflow:
+
+1. wait until Yahoo reveals the draft slot;
+2. create a fresh mock session with `ff-draft-new`;
+3. copy a recent Yahoo Draft Chat selection range;
+4. run `ffmock`;
+5. verify `Current overall pick`;
+6. review the deterministic shortlist;
+7. repeat before upcoming selections.
+
 ## Yahoo OAuth
 
-Yahoo API access is optional for the deterministic draft and copied-chat workflow.
+Yahoo API access is optional for the copied-chat workflow.
 
-A local `oauth2.json` may be placed in the workspace root for API integration:
+A local workspace-level `oauth2.json` may contain:
 
 ```json
 {
@@ -247,7 +382,8 @@ A local `oauth2.json` may be placed in the workspace root for API integration:
 }
 ```
 
-Never commit access tokens, refresh tokens, client secrets, `.env` files, or `oauth2.json`.
+Never commit OAuth credentials, access tokens, refresh tokens, client secrets, `.env`, or
+real private league data.
 
 OAuth path precedence is:
 
@@ -259,65 +395,105 @@ YAHOO_OAUTH_FILE
 <workspace>/oauth2.json
 ```
 
-To manually exercise the Yahoo API boundary when valid credentials and Fantasy Sports API access are available:
+A manual Yahoo connectivity check is available:
 
 ```bash
 python scripts/check_yahoo_connection.py
 ```
 
-Unit tests do not require Yahoo credentials or network access.
+## Quality Gates
 
-## Quality and Testing
+The project uses:
 
-The project uses Ruff, strict mypy, pytest, branch-aware pytest-cov, pre-commit, GitHub Actions, and an AST-based test-documentation check.
+- Ruff;
+- strict mypy;
+- pytest;
+- pytest-cov with branch coverage;
+- behavioral test docstrings;
+- pre-commit;
+- GitHub Actions.
 
-Tests are written around meaningful behavior and boundaries, including:
+Install pre-commit once per clone:
 
-- snake-draft turns and ownership;
-- roster and FLEX accounting;
-- tier boundaries and scarcity;
-- player identity and duplicate protection;
-- persistence and undo;
+```bash
+python -m pre_commit install
+```
+
+Run all configured hooks:
+
+```bash
+python -m pre_commit run --all-files
+```
+
+Run the full local quality gate:
+
+```bash
+python -m ruff format --check src tests scripts tools
+python -m ruff check src tests scripts tools
+python -m mypy src tests
+python tools/check_test_docstrings.py
+python -m pytest   --cov=fantasy_football_agent   --cov-branch   --cov-report=term-missing
+```
+
+The project enforces a minimum of 90% branch-aware coverage.
+
+Exact test counts and coverage percentages are intentionally not documented here because
+they change as the project evolves.
+
+## Testing Philosophy
+
+Tests focus on meaningful behavior rather than coverage for its own sake.
+
+Important areas include:
+
+- snake-draft ownership;
+- roster/FLEX accounting;
+- tier boundaries;
+- player availability;
+- two-horizon candidate evaluation;
+- roster fit;
+- roster utility;
+- return risk;
+- loss cost;
+- recommendation ordering;
 - Yahoo draft-chat parsing;
-- Yahoo/local-state reconciliation;
-- ambiguity, overlap, gap, and conflict behavior;
-- CLI orchestration; and
-- Yahoo OAuth behavior without live network calls.
-
-The repository enforces a minimum of 90% branch-aware test coverage. The threshold is intentionally below 100% so coverage does not encourage low-value tests of trivial launcher or defensive boilerplate.
-
-Development commands, targeted test workflows, the full quality gate, coverage commands, and smoke-test procedures are documented in [DEVELOPMENT.md](DEVELOPMENT.md).
+- ambiguity handling;
+- overlap verification;
+- gap/conflict detection;
+- persistence;
+- undo;
+- OAuth refresh behavior without live network calls.
 
 ## Data and Privacy
 
-The repository contains only sanitized example inputs. Real league settings, active draft state, raw Yahoo settings, OAuth credentials, and full Yahoo-derived ranking datasets should remain local.
+The repository should contain sanitized example data only.
 
-If external ranking or league data is used, the user is responsible for ensuring that storage and redistribution are permitted. The deterministic engine only requires data that conforms to the documented local schemas.
+Keep the following local:
 
-## Current Status
+- `config/league.json`
+- `data/draft_state.json`
+- `data/yahoo_rankings_2026.csv`
+- `data/raw/`
+- `oauth2.json`
 
-The deterministic draft engine and Yahoo copied-chat synchronization path are ready for real Yahoo mock-draft testing.
-
-The next milestone is to use real mock drafts as acceptance tests and identify practical issues in:
-
-- copy/paste latency and ergonomics;
-- unexpected Yahoo chat formats;
-- player-resolution edge cases;
-- synchronization recovery;
-- live output density; and
-- usefulness of tier/lookahead information under a short draft clock.
-
-The mock-draft experience should drive the next UX changes rather than adding speculative complexity beforehand.
+If external ranking or league data is used, ensure that storage and redistribution comply
+with the provider's terms.
 
 ## Roadmap
 
-Planned progression:
+The deterministic recommendation layer is now implemented and ready for additional mock
+validation.
 
-1. Run real Yahoo mock drafts and harden the live synchronization/analysis workflow.
-2. Build a deterministic candidate-evaluation layer using tiers, ADP, roster fit, scarcity, opponent exposure, and expected survival.
-3. Add a single AI agent that consumes structured deterministic candidate analysis and explains/recommends draft choices.
-4. Evaluate the single-agent approach through repeated mock drafts.
-5. Introduce specialized agents only where separate reasoning roles demonstrably add value.
-6. Optionally expand Yahoo API synchronization when external access is available.
+Next priorities:
 
-The long-term goal is an agentic fantasy-football assistant whose reasoning can evolve without weakening the reliability of the underlying draft state.
+1. run more live Yahoo mock drafts and collect recommendation regressions;
+2. refine the live-draft decision workflow based on clock pressure and readability;
+3. add timestamped recent-news and injury context as a separate input layer;
+4. add one AI recommendation agent over structured deterministic results;
+5. run AI-assisted mocks and harden deterministic fallback behavior;
+6. evaluate richer Yahoo API ingestion when available;
+7. consider specialized multi-agent roles only if they add measurable value.
+
+The core rule remains:
+
+> **The agent may reason about draft state, but it should not invent draft state.**
