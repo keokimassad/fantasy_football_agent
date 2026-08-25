@@ -52,11 +52,15 @@ Future AI functionality will consume those results rather than recreate them.
 - Evaluate candidates deterministically.
 - Produce a compact top-five recommendation shortlist.
 - Distinguish:
+  - cross-position candidate desirability;
   - roster fit;
   - roster utility;
-  - return risk;
+  - availability risk while waiting for the next pick;
+  - return risk while on the clock;
   - loss cost;
-  - decision priority.
+  - decision urgency.
+- Render phase-aware shortlists for waiting and on-clock states.
+- Keep raw opponent position exposure as descriptive evidence rather than selection probability.
 - Record draft picks locally.
 - Undo the most recent pick.
 - Parse copied Yahoo Draft Chat selections.
@@ -75,34 +79,47 @@ Yahoo Draft Chat / future Yahoo API
               v
           DraftState
               |
-              | availability
-              | roster accounting
-              | tiers
-              | snake order
-              | lookahead
-              | opponent exposure
+              | availability, roster accounting, tiers,
+              | snake order, pick windows, opponent exposure
               v
       CandidateEvaluation
               |
-              | roster fit
-              | roster utility
-              | tier loss cost
-              | market return risk
-              | deterministic signals
-              v
-  Deterministic Recommendations
-              |
-              | structured decision evidence
-              v
- Future player-news context + AI agent
+              +-------------------------------+
+              |                               |
+              v                               v
+   Waiting for my pick                  On the clock
+   - desirability                       - desirability
+   - availability risk                  - roster utility
+   - pre-decision pressure              - loss cost
+                                        - return risk
+                                        - urgency
+              |                               |
+              +---------------+---------------+
+                              v
+                 Deterministic shortlist
+                              |
+                              v
+             Future news context + AI agent
 ```
 
 Yahoo-specific code remains outside the core draft engine so deterministic behavior can be
-tested without network access.
+tested without network access. The recommendation layer is phase-aware: waiting mode helps
+prepare for the next decision, while on-clock mode helps decide whether to take a player or
+risk waiting until the following pick.
 
 ## Recommendation Model
 
-The recommendation layer intentionally keeps several concepts separate.
+The recommendation layer intentionally keeps player value, roster construction, scarcity,
+and timing as separate concepts.
+
+### Candidate Desirability
+
+Describes whether a player is a plausible cross-position selection in the current draft
+window.
+
+Yahoo rank is the deterministic cross-position guardrail. Manual tier scarcity may change
+how urgent a player is, but a substantially later-ranked player should not leap the board
+solely because that player is last in a position-relative tier.
 
 ### Roster Fit
 
@@ -119,16 +136,31 @@ Describes how useful that roster fit is **right now**.
 For example, a second TE may technically fit in FLEX, but its immediate roster utility can
 be lower while dedicated RB or WR starter slots remain open.
 
+### Availability Risk
+
+Used while the user is **waiting for the next pick**.
+
+It estimates whether a candidate is likely to survive until the user's decision pick using
+Yahoo rank and ADP as independent market signals.
+
+Waiting-mode output is preparation rather than a claim that the player is currently
+selectable. Signals therefore use language such as:
+
+- `VALUE_IF_AVAILABLE_AT_DECISION`
+- `PRE_DECISION_POSITION_PRESSURE`
+
+The engine does not emit `FALLEN_PAST_ADP` before the user is actually on the clock.
+
 ### Return Risk
 
-Estimates whether a player is likely to disappear before the user's following pick.
+Used when the user is **on the clock**.
 
-Inputs include:
+It estimates whether a player is likely to disappear before the user's following pick.
+Yahoo rank and ADP provide independent market-timing evidence.
 
-- player ADP relative to the decision and following picks;
-- opponent positional exposure inside the return window.
-
-This is a deterministic heuristic, not a probability model.
+Raw opponent position exposure remains visible as deterministic context, but generic
+exposure is **not treated as selection probability**. An opponent having an open QB slot is
+not equivalent to predicting that the opponent will draft a QB.
 
 ### Loss Cost
 
@@ -141,12 +173,14 @@ Inputs include:
 - known next-tier information;
 - large tier drops.
 
-A player can have high loss cost but low return risk, meaning the player is valuable to
-preserve but may still be safe to wait on.
+Loss cost describes replacement pain. It does not independently redefine cross-position
+player value.
 
-### Decision Priority
+### Decision Urgency
 
-Combines roster utility, loss cost, and return risk into an explainable urgency category.
+The internal decision-priority classification is presented to the user as **Urgency**.
+Urgency answers how strongly the current evidence argues against waiting; it is not the
+same as overall player desirability.
 
 ### Manual Tiers
 
@@ -155,7 +189,8 @@ Manual tiers remain **position-relative**.
 A Tier 1 RB is not assumed to have the same universal value as a Tier 1 WR. The engine does
 not convert tiers into an arbitrary cross-position numerical score.
 
-Yahoo rank remains the deterministic cross-position baseline and tie-breaker.
+Yahoo rank remains the deterministic cross-position baseline/guardrail, while ADP provides
+additional market-timing evidence.
 
 ## Project Structure
 
@@ -298,15 +333,29 @@ Run:
 ff-draft --workspace .
 ```
 
-The report begins with a compact deterministic shortlist.
+The first section is phase-aware.
 
-Example shape:
+While waiting for the next pick:
+
+```text
+Decision prep shortlist for pick #5:
+  1. Candidate | RB T1 | Desirability HIGH | Availability risk HIGH
+     Rank #1 | ADP 1.5 | Fit DIRECT_STARTER | Roster utility HIGH
+     Tier left 3 | Next T2
+     Why: FILLS_DIRECT_STARTER, VALUE_IF_AVAILABLE_AT_DECISION,
+          PRE_DECISION_POSITION_PRESSURE
+```
+
+When on the clock:
 
 ```text
 Deterministic shortlist:
-  1. Candidate | WR T3 | Priority HIGH | Roster utility HIGH | Loss cost HIGH | Return risk MEDIUM
-     Rank #38 | ADP 43.3 | Fit DIRECT_STARTER | Tier left 1 | Next T4
-     Why: FILLS_DIRECT_STARTER, LAST_IN_TIER, RETURN_WINDOW_POSITION_PRESSURE
+  1. Candidate | WR T3 | Desirability HIGH | Urgency HIGH
+     Rank #38 | ADP 43.3 | Fit DIRECT_STARTER | Roster utility HIGH
+     Loss cost HIGH | Return risk MEDIUM
+     Tier left 1 | Next T4
+     Why: FILLS_DIRECT_STARTER, LAST_IN_TIER,
+          RETURN_WINDOW_POSITION_PRESSURE
 ```
 
 The detailed report also includes:
@@ -320,7 +369,7 @@ The detailed report also includes:
 - open starter slots;
 - active lookahead;
 - opponent lookahead;
-- position exposure before the following user pick.
+- raw position exposure in the relevant pick window.
 
 ## Manual Draft Updates
 
@@ -361,13 +410,28 @@ ffmock() {
 
 Typical mock workflow:
 
-1. wait until Yahoo reveals the draft slot;
-2. create a fresh mock session with `ff-draft-new`;
-3. copy a recent Yahoo Draft Chat selection range;
-4. run `ffmock`;
-5. verify `Current overall pick`;
-6. review the deterministic shortlist;
-7. repeat before upcoming selections.
+1. wait until Yahoo reveals the mock slot;
+2. create a fresh mock session with that exact slot;
+3. before any selections exist, run `ff-draft --workspace .` to inspect decision prep;
+4. once selections exist, copy a recent overlapping Yahoo Draft Chat range;
+5. run `ffmock`;
+6. verify `Current overall pick` matches Yahoo;
+7. while waiting, review `Decision prep shortlist for pick #X`;
+8. when on the clock, review `Deterministic shortlist`;
+9. repeat before upcoming selections and again on the clock when useful.
+
+Create or replace the current mock with:
+
+```bash
+ff-draft-new \
+  --type mock \
+  --slot <YAHOO_MOCK_SLOT> \
+  --replace \
+  --workspace .
+```
+
+If synchronization reports a gap, copy a larger overlapping range. If it reports a
+conflict, stop and reconcile the state rather than forcing an update.
 
 ## Yahoo OAuth
 
@@ -451,10 +515,15 @@ Important areas include:
 - tier boundaries;
 - player availability;
 - two-horizon candidate evaluation;
+- waiting-vs-on-clock phase detection;
+- candidate desirability;
 - roster fit;
 - roster utility;
+- availability risk;
 - return risk;
 - loss cost;
+- urgency;
+- cross-position market guardrails;
 - recommendation ordering;
 - Yahoo draft-chat parsing;
 - ambiguity handling;
@@ -481,7 +550,7 @@ with the provider's terms.
 
 ## Roadmap
 
-The deterministic recommendation layer is now implemented and ready for additional mock
+The deterministic recommendation layer is now phase-aware and ready for additional mock
 validation.
 
 Next priorities:

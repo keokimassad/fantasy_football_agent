@@ -101,15 +101,27 @@ Keep these concepts distinct.
 The user's valuation of a player **within that player's position**.
 
 Manual tiers are position-relative and must not be converted into a naive universal score.
+Tier scarcity describes replacement pain; it does not independently create cross-position
+player value.
 
 ### Yahoo Rank / ADP
 
 Market evidence.
 
-- Yahoo rank supplies a cross-position baseline.
-- ADP helps estimate market timing.
-- A player falling past ADP can be surfaced as value.
+- Yahoo rank is the primary deterministic cross-position guardrail.
+- ADP supplies an independent market-timing signal.
+- A player falling past ADP can be surfaced as value only when the user is actually on the
+  clock.
 - ADP does not become factual draft state.
+
+### Candidate Desirability
+
+Answers:
+
+> Is this player a plausible cross-position selection in the current draft window?
+
+Desirability prevents urgency/scarcity from making a substantially later-ranked player look
+like the best overall selection solely because that player is last in a positional tier.
 
 ### Roster Fit
 
@@ -125,22 +137,31 @@ DEPTH
 
 Describes the immediate value of that roster fit.
 
-For example, FLEX eligibility is not the same as optimal FLEX usage. A second TE can be
-eligible for FLEX while still having lower immediate utility when RB or WR starter slots
-remain open.
+FLEX eligibility is not the same as optimal FLEX usage. A second TE can be eligible for
+FLEX while still having lower immediate utility when RB or WR starter slots remain open.
 
-### Return Risk
+### Availability Risk
+
+Used while waiting for the user's next decision.
 
 Answers:
 
-> How likely is this player to disappear before the user's following pick?
+> How likely is this player to disappear before I can select again?
 
-Current inputs include:
+Current market inputs are Yahoo rank and ADP. The waiting phase uses preparation-oriented
+signals such as `VALUE_IF_AVAILABLE_AT_DECISION` rather than claiming a player has already
+fallen past ADP.
 
-- ADP timing;
-- return-window opponent position exposure.
+### Return Risk
 
-Return risk is a heuristic, not a probability.
+Used while the user is on the clock.
+
+Answers:
+
+> If I pass now, how likely is this player to disappear before my following pick?
+
+Yahoo rank and ADP are independent market signals. Generic opponent position exposure is
+retained as evidence but is **not treated as selection probability**.
 
 ### Loss Cost
 
@@ -155,37 +176,78 @@ Current inputs include:
 - known next-tier information;
 - large tier drops.
 
-High loss cost does not automatically mean high immediate priority if return risk is low.
+High loss cost does not automatically mean the candidate has high cross-position value.
 
-### Decision Priority
+### Decision Priority / Urgency
 
-Combines the other dimensions into deterministic urgency.
+`DecisionPriority` is an internal urgency classification. The CLI presents it as
+**Urgency** to avoid implying that urgency equals player value.
 
-Avoid collapsing all evidence into an opaque magic score. Individual signals should remain
-visible and independently testable.
+Do not collapse desirability and urgency into an opaque magic score. Individual signals
+should remain visible and independently testable.
 
-## Two Draft Horizons
+## Phase-Aware Recommendation Flow
 
-Candidate evaluation models two distinct windows:
+Candidate evaluation models two distinct horizons and two user-facing phases.
 
 ```text
 current pick
     |
-    | pre-decision exposure
+    | pre-decision window
     v
 user decision pick
     |
-    | return-window exposure
+    | return window
     v
 user following pick
 ```
 
-These answer different questions:
+### Waiting for the decision pick
 
-1. can the player survive until the user's next decision?
-2. if the user passes, can the player survive until the following decision?
+Primary questions:
 
-Tests should preserve this distinction.
+1. which players are plausible targets for the upcoming pick?
+2. which players are unlikely to survive until that pick?
+
+User-facing output:
+
+```text
+Decision prep shortlist for pick #X
+Desirability
+Availability risk
+```
+
+Waiting-mode signals may include:
+
+```text
+VALUE_IF_AVAILABLE_AT_DECISION
+PRE_DECISION_POSITION_PRESSURE
+```
+
+Waiting mode must not emit `FALLEN_PAST_ADP` merely because the future decision pick is
+later than the player's ADP.
+
+### On the clock
+
+Primary questions:
+
+1. which available players are plausible selections now?
+2. how painful is it to lose each candidate?
+3. if the candidate is passed over, how likely is the candidate to survive until the next
+   turn?
+
+User-facing output:
+
+```text
+Deterministic shortlist
+Desirability
+Roster utility
+Loss cost
+Return risk
+Urgency
+```
+
+The phase boundary is part of domain behavior and should have regression coverage.
 
 ## Primary CLI Commands
 
@@ -347,24 +409,34 @@ Important deterministic behavior includes:
 - player identity;
 - current and following user picks;
 - opponent exposure;
+- waiting-vs-on-clock phase detection;
 - candidate evaluation;
+- candidate desirability;
 - roster fit;
 - roster utility;
+- availability risk;
 - return risk;
 - loss cost;
-- priority;
+- urgency;
+- cross-position market guardrails;
 - deterministic ordering.
 
 Recommendation tests should include regression cases derived from real mock drafts.
 
 Useful examples already represented by the model include:
 
-- medium return risk + high loss cost can outrank high return risk + lower replacement cost;
-- a last-in-tier player with low return risk can remain medium priority;
+- medium return risk + high loss cost can outrank high return risk + lower replacement cost
+  inside a plausible market window;
+- a last-in-tier player with low return risk can remain medium urgency;
 - an unknown next tier must not be treated as a known tier cliff;
 - FLEX eligibility can coexist with low immediate roster utility;
 - a dedicated starter can outrank an early FLEX candidate even when Yahoo rank slightly
-  favors the FLEX candidate.
+  favors the FLEX candidate;
+- a much later-ranked last-in-tier player cannot leapfrog the plausible draft window solely
+  because of scarcity;
+- generic opponent position exposure does not independently become return probability;
+- missing ADP can still yield medium return risk when Yahoo rank supplies meaningful market
+  evidence.
 
 Avoid player-specific hard-coding.
 
@@ -491,18 +563,56 @@ ff-draft-new \
 
 Real mocks are the main acceptance test for recommendation behavior and live workflow.
 
-During the mock, inspect the `Deterministic shortlist:` first.
+Create the mock only after Yahoo reveals the assigned slot:
+
+```bash
+ff-draft-new \
+  --type mock \
+  --slot <YAHOO_MOCK_SLOT> \
+  --replace \
+  --workspace .
+```
+
+Before any selections exist, run:
+
+```bash
+ff-draft --workspace .
+```
+
+Expected waiting-phase behavior:
+
+- heading is `Decision prep shortlist for pick #X:`;
+- `Desirability` and `Availability risk` are visible;
+- preparation signals can include `VALUE_IF_AVAILABLE_AT_DECISION`;
+- `FALLEN_PAST_ADP` is not emitted before the user is on the clock;
+- later-ranked positional scarcity does not leapfrog the plausible cross-position market
+  window.
+
+After Yahoo Draft Chat contains selections, copy a recent overlapping range and run:
+
+```bash
+ffmock
+```
+
+When on the clock, expected behavior is:
+
+- heading is `Deterministic shortlist:`;
+- `Desirability`, `Roster utility`, `Loss cost`, `Return risk`, and `Urgency` are visible;
+- `FALLEN_PAST_ADP` may appear when it is factually true at the current pick;
+- raw opponent exposure remains explanatory context rather than probability.
 
 When a recommendation feels wrong, record:
 
 ```text
 Pick / situation:
+Phase: waiting / on-clock
 Recommended:
 What I would have chosen:
 Why it felt wrong:
+  cross-position value / desirability?
   roster construction?
   tier / replacement cost?
-  ADP / return timing?
+  ADP / timing?
   opponent behavior?
   positional strategy?
   current news / injury?
@@ -513,10 +623,11 @@ Do not immediately create a heuristic for every surprising output.
 
 First determine:
 
-1. which domain concept is missing;
-2. whether the behavior repeats;
-3. whether the rule can be generalized;
-4. whether the change remains explainable.
+1. whether the issue is desirability, availability, urgency, or factual state;
+2. which domain concept is missing;
+3. whether the behavior repeats;
+4. whether the rule can be generalized;
+5. whether the change remains explainable.
 
 Then add a regression test.
 
@@ -525,12 +636,16 @@ Then add a regression test.
 When changing recommendation behavior:
 
 1. preserve factual evidence separately from interpretation;
-2. add one domain concept at a time;
-3. write regression tests from realistic scenarios;
-4. avoid player-specific logic;
-5. avoid arbitrary position penalties;
-6. preserve explainability;
-7. rerun a real mock after meaningful changes.
+2. preserve the distinction between desirability and urgency;
+3. preserve the distinction between waiting and on-clock phases;
+4. keep tier scarcity as replacement-cost/urgency evidence rather than universal value;
+5. treat generic opponent exposure as evidence, not probability;
+6. add one domain concept at a time;
+7. write regression tests from realistic scenarios;
+8. avoid player-specific logic;
+9. avoid arbitrary position penalties;
+10. preserve explainability;
+11. rerun a real mock after meaningful changes.
 
 ## Future News / Injury Context
 
@@ -578,6 +693,7 @@ Likely input:
 
 ```text
 DraftState summary
+current recommendation phase
 CandidateRecommendation[]
 PlayerContext[]
 small league context
@@ -630,7 +746,7 @@ If public capabilities or developer workflow changed, update both `README.md` an
 
 ## Current Milestone
 
-The project is now **mock-draft ready with deterministic recommendations**.
+The project is now **mock-draft ready with phase-aware deterministic recommendations**.
 
 Completed foundations:
 
@@ -642,12 +758,18 @@ Completed foundations:
 6. incremental persistence;
 7. candidate evaluation;
 8. two decision horizons;
-9. roster fit;
-10. roster utility;
-11. return-risk heuristics;
-12. tier loss-cost modeling;
-13. explainable top-five deterministic recommendations;
-14. CLI recommendation presentation.
+9. waiting-vs-on-clock recommendation phases;
+10. cross-position candidate desirability;
+11. roster fit;
+12. roster utility;
+13. availability-risk heuristics;
+14. return-risk heuristics using Yahoo rank and ADP market evidence;
+15. tier loss-cost modeling;
+16. market guardrails preventing scarcity from independently overpowering cross-position
+    value;
+17. opponent exposure retained as deterministic context rather than probability;
+18. explainable top-five deterministic recommendations;
+19. phase-aware CLI recommendation presentation.
 
 Next sequence:
 

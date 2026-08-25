@@ -59,6 +59,24 @@ class RosterUtility(StrEnum):
     LOW = "LOW"
 
 
+class CandidateDesirability(StrEnum):
+    """Describe whether a candidate is a plausible selection in the current draft window."""
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class AvailabilityRisk(StrEnum):
+    """Describe the risk that a candidate disappears before the user's decision pick."""
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    UNKNOWN = "UNKNOWN"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
 @dataclass(frozen=True)
 class CandidateEvaluation:
     """Collect deterministic evidence for one available draft candidate."""
@@ -66,6 +84,7 @@ class CandidateEvaluation:
     player: Player
     decision_pick: int
     following_pick: int
+    is_on_clock: bool
     roster_fit: RosterFit
     other_flex_eligible_starter_slots_open: int
     tier_remaining: int | None
@@ -81,7 +100,9 @@ class CandidateRecommendation:
     """Combine candidate facts with transparent deterministic decision signals."""
 
     evaluation: CandidateEvaluation
+    desirability: CandidateDesirability
     roster_utility: RosterUtility
+    availability_risk: AvailabilityRisk
     return_risk: ReturnRisk
     loss_cost: LossCost
     priority: DecisionPriority
@@ -148,28 +169,81 @@ def _get_roster_utility(
     return RosterUtility.LOW
 
 
-def _get_return_risk(
+def _get_candidate_desirability(
     evaluation: CandidateEvaluation,
-) -> ReturnRisk:
-    """Estimate return risk from market timing and opponent exposure.
+    roster_utility: RosterUtility,
+) -> CandidateDesirability:
+    """Classify cross-position selection plausibility from Yahoo rank and roster utility.
 
-    This is intentionally a heuristic rather than a probability model.
+    Yahoo rank remains the cross-position value baseline. Scarcity and return risk may
+    reorder candidates inside the plausible draft window, but should not promote a
+    substantially later-ranked player solely because that player is scarce.
     """
+    rank = evaluation.player.rank
+
+    if rank <= evaluation.decision_pick:
+        if roster_utility == RosterUtility.HIGH:
+            return CandidateDesirability.HIGH
+
+        return CandidateDesirability.MEDIUM
+
+    if rank <= evaluation.following_pick and roster_utility != RosterUtility.LOW:
+        return CandidateDesirability.MEDIUM
+
+    return CandidateDesirability.LOW
+
+
+def _get_availability_risk(
+    evaluation: CandidateEvaluation,
+) -> AvailabilityRisk:
+    """Estimate whether a player survives until the user's decision pick."""
+    if evaluation.is_on_clock:
+        return AvailabilityRisk.NOT_APPLICABLE
+
+    rank_expected = evaluation.player.rank <= evaluation.decision_pick
     adp = evaluation.player.adp
 
     if adp is None:
+        if rank_expected:
+            return AvailabilityRisk.MEDIUM
+
+        return AvailabilityRisk.UNKNOWN
+
+    adp_expected = adp <= evaluation.decision_pick
+
+    if rank_expected and adp_expected:
+        return AvailabilityRisk.HIGH
+
+    if rank_expected or adp_expected:
+        return AvailabilityRisk.MEDIUM
+
+    return AvailabilityRisk.LOW
+
+
+def _get_return_risk(
+    evaluation: CandidateEvaluation,
+) -> ReturnRisk:
+    """Estimate return risk from Yahoo rank and ADP market timing.
+
+    Rank and ADP provide independent market signals. Opponent positional exposure
+    remains useful supporting evidence, but it is not treated as selection
+    probability until the model has position-specific opponent behavior.
+    """
+    rank_expected = evaluation.player.rank <= evaluation.following_pick
+    adp = evaluation.player.adp
+
+    if adp is None:
+        if rank_expected:
+            return ReturnRisk.MEDIUM
+
         return ReturnRisk.UNKNOWN
 
-    if adp <= evaluation.decision_pick:
+    adp_expected = adp <= evaluation.following_pick
+
+    if rank_expected and adp_expected:
         return ReturnRisk.HIGH
 
-    if adp < evaluation.following_pick:
-        if evaluation.return_window_position_exposure > 0:
-            return ReturnRisk.HIGH
-
-        return ReturnRisk.MEDIUM
-
-    if evaluation.return_window_position_exposure > 0:
+    if rank_expected or adp_expected:
         return ReturnRisk.MEDIUM
 
     return ReturnRisk.LOW
@@ -233,14 +307,22 @@ def _get_recommendation_signals(
 
     signals.extend(evaluation.scarcity_flags)
 
-    if evaluation.adp_value_at_decision is not None and evaluation.adp_value_at_decision > 0:
-        signals.append("FALLEN_PAST_ADP")
+    if evaluation.is_on_clock:
+        if evaluation.adp_value_at_decision is not None and evaluation.adp_value_at_decision > 0:
+            signals.append("FALLEN_PAST_ADP")
 
-    if evaluation.player.adp is not None and evaluation.player.adp < evaluation.following_pick:
-        signals.append("MARKET_EXPECTED_BEFORE_FOLLOWING_PICK")
+        if evaluation.player.adp is not None and evaluation.player.adp <= evaluation.following_pick:
+            signals.append("MARKET_EXPECTED_BEFORE_FOLLOWING_PICK")
 
-    if evaluation.return_window_position_exposure > 0:
-        signals.append("RETURN_WINDOW_POSITION_PRESSURE")
+        if evaluation.return_window_position_exposure > 0:
+            signals.append("RETURN_WINDOW_POSITION_PRESSURE")
+
+    else:
+        if evaluation.adp_value_at_decision is not None and evaluation.adp_value_at_decision > 0:
+            signals.append("VALUE_IF_AVAILABLE_AT_DECISION")
+
+        if evaluation.pre_decision_position_exposure > 0:
+            signals.append("PRE_DECISION_POSITION_PRESSURE")
 
     return tuple(signals)
 
@@ -283,6 +365,29 @@ def _get_decision_priority(
     return DecisionPriority.LOW
 
 
+def _recommendation_sort_key(
+    recommendation: CandidateRecommendation,
+) -> tuple[int, ...]:
+    """Return a phase-aware deterministic shortlist ordering."""
+    evaluation = recommendation.evaluation
+
+    if not evaluation.is_on_clock:
+        return (
+            _DESIRABILITY_GUARDRAIL_ORDER[recommendation.desirability],
+            _DESIRABILITY_ORDER[recommendation.desirability],
+            evaluation.player.rank,
+        )
+
+    return (
+        _DESIRABILITY_GUARDRAIL_ORDER[recommendation.desirability],
+        _PRIORITY_ORDER[recommendation.priority],
+        _LOSS_COST_ORDER[recommendation.loss_cost],
+        _DESIRABILITY_ORDER[recommendation.desirability],
+        _RETURN_RISK_ORDER[recommendation.return_risk],
+        evaluation.player.rank,
+    )
+
+
 _PRIORITY_ORDER = {
     DecisionPriority.HIGH: 0,
     DecisionPriority.MEDIUM: 1,
@@ -308,6 +413,19 @@ _ROSTER_UTILITY_ORDER = {
     RosterUtility.HIGH: 0,
     RosterUtility.MEDIUM: 1,
     RosterUtility.LOW: 2,
+}
+
+
+_DESIRABILITY_GUARDRAIL_ORDER = {
+    CandidateDesirability.HIGH: 0,
+    CandidateDesirability.MEDIUM: 0,
+    CandidateDesirability.LOW: 1,
+}
+
+_DESIRABILITY_ORDER = {
+    CandidateDesirability.HIGH: 0,
+    CandidateDesirability.MEDIUM: 1,
+    CandidateDesirability.LOW: 2,
 }
 
 
@@ -380,6 +498,14 @@ def evaluate_candidates(
         return_window_context,
     )
 
+    is_on_clock = (
+        team_for_overall_pick(
+            state.current_overall_pick,
+            league.teams,
+        )
+        == state.my_draft_slot
+    )
+
     evaluations: list[CandidateEvaluation] = []
 
     for player in available_players:
@@ -390,6 +516,7 @@ def evaluate_candidates(
                 player=player,
                 decision_pick=decision_pick,
                 following_pick=following_pick,
+                is_on_clock=is_on_clock,
                 roster_fit=_get_roster_fit(
                     player,
                     state,
@@ -434,18 +561,18 @@ def build_candidate_recommendations(
     *,
     limit: int = 5,
 ) -> list[CandidateRecommendation]:
-    """Build an explainable deterministic shortlist.
+    """Build an explainable phase-aware deterministic shortlist.
 
-    Priority, loss cost, and return risk organize candidates before Yahoo rank.
-    Yahoo rank remains the cross-position market baseline rather than assigning
-    arbitrary numerical weights to position-relative manual tiers.
+    Candidate desirability provides a cross-position guardrail using Yahoo rank
+    and roster utility. Within the plausible draft window, loss cost and return
+    risk continue to express decision urgency.
 
     Args:
         evaluations: Candidate facts produced by ``evaluate_candidates``.
         limit: Maximum number of candidates to return.
 
     Returns:
-        Candidate recommendations ordered by deterministic decision priority.
+        Candidate recommendations ordered for the current draft phase.
 
     Raises:
         ValueError: If limit is less than one.
@@ -457,13 +584,20 @@ def build_candidate_recommendations(
 
     for evaluation in evaluations:
         roster_utility = _get_roster_utility(evaluation)
+        desirability = _get_candidate_desirability(
+            evaluation,
+            roster_utility,
+        )
+        availability_risk = _get_availability_risk(evaluation)
         return_risk = _get_return_risk(evaluation)
         loss_cost = _get_loss_cost(evaluation)
 
         recommendations.append(
             CandidateRecommendation(
                 evaluation=evaluation,
+                desirability=desirability,
                 roster_utility=roster_utility,
+                availability_risk=availability_risk,
                 return_risk=return_risk,
                 loss_cost=loss_cost,
                 priority=_get_decision_priority(
@@ -478,11 +612,5 @@ def build_candidate_recommendations(
 
     return sorted(
         recommendations,
-        key=lambda recommendation: (
-            _PRIORITY_ORDER[recommendation.priority],
-            _ROSTER_UTILITY_ORDER[recommendation.roster_utility],
-            _LOSS_COST_ORDER[recommendation.loss_cost],
-            _RETURN_RISK_ORDER[recommendation.return_risk],
-            recommendation.evaluation.player.rank,
-        ),
+        key=_recommendation_sort_key,
     )[:limit]
