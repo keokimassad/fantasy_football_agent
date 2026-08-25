@@ -50,9 +50,14 @@ def _parse_args() -> argparse.Namespace:
 def _print_candidate_recommendations(
     recommendations: list[CandidateRecommendation],
 ) -> None:
-    """Print a compact deterministic shortlist for the current draft decision."""
+    """Print a compact shortlist appropriate to the current draft phase."""
     print()
-    print("Deterministic shortlist:")
+
+    if recommendations and not recommendations[0].evaluation.is_on_clock:
+        decision_pick = recommendations[0].evaluation.decision_pick
+        print(f"Decision prep shortlist for pick #{decision_pick}:")
+    else:
+        print("Deterministic shortlist:")
 
     if not recommendations:
         print("  No available candidates.")
@@ -70,21 +75,38 @@ def _print_candidate_recommendations(
         next_tier_display = f"T{evaluation.next_tier}" if evaluation.next_tier is not None else "-"
         signals_display = ", ".join(recommendation.signals) if recommendation.signals else "-"
 
+        if evaluation.is_on_clock:
+            print(
+                f"  {index}. {player.name} "
+                f"| {player.position} {tier_display} "
+                f"| Desirability {recommendation.desirability.value} "
+                f"| Urgency {recommendation.priority.value}"
+            )
+            print(
+                f"     Rank #{player.rank} | ADP {adp_display} "
+                f"| Fit {evaluation.roster_fit.value} "
+                f"| Roster utility {recommendation.roster_utility.value} "
+                f"| Loss cost {recommendation.loss_cost.value} "
+                f"| Return risk {recommendation.return_risk.value}"
+            )
+        else:
+            print(
+                f"  {index}. {player.name} "
+                f"| {player.position} {tier_display} "
+                f"| Desirability {recommendation.desirability.value} "
+                f"| Availability risk {recommendation.availability_risk.value}"
+            )
+            print(
+                f"     Rank #{player.rank} | ADP {adp_display} "
+                f"| Fit {evaluation.roster_fit.value} "
+                f"| Roster utility {recommendation.roster_utility.value}"
+            )
+
         print(
-            f"  {index}. {player.name} "
-            f"| {player.position} {tier_display} "
-            f"| Priority {recommendation.priority.value} "
-            f"| Roster utility {recommendation.roster_utility.value} "
-            f"| Loss cost {recommendation.loss_cost.value} "
-            f"| Return risk {recommendation.return_risk.value}"
+            f"     Tier left {tier_remaining_display} "
+            f"| Next {next_tier_display} "
+            f"| Why: {signals_display}"
         )
-        print(
-            f"     Rank #{player.rank} | ADP {adp_display} "
-            f"| Fit {evaluation.roster_fit.value} "
-            f"| Tier left {tier_remaining_display} "
-            f"| Next {next_tier_display}"
-        )
-        print(f"     Why: {signals_display}")
 
 
 def main() -> None:

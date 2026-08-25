@@ -65,7 +65,7 @@ def test_main_reports_waiting_draft_context_from_explicit_workspace(
     """
     GIVEN: a workspace where draft slot four is waiting at overall pick five
     WHEN: the analyzer CLI runs with that workspace
-    THEN: the report shows availability, scarcity, and the upcoming opponent window
+    THEN: the report shows decision preparation, availability, and upcoming opponent context
     """
     _write_workspace(
         tmp_path,
@@ -95,24 +95,29 @@ def test_main_reports_waiting_draft_context_from_explicit_workspace(
     assert "League: Test League" in output
     assert "Current overall pick: 5" in output
     assert "Team currently drafting: 5" in output
-    assert "Deterministic shortlist:" in output
-    assert "1. Top Running Back | RB T1" in output
-    assert "Priority HIGH" in output
-    assert "Return risk HIGH" in output
-    assert "Fit DIRECT_STARTER" in output
-    assert "Tier left 1" in output
-    assert "Next T3" in output
-    assert "LAST_IN_TIER" in output
-    assert "LARGE_TIER_DROP" in output
+
+    assert "Decision prep shortlist for pick #17:" in output
+    assert "Availability risk" in output
+    assert "VALUE_IF_AVAILABLE_AT_DECISION" in output
+    assert "PRE_DECISION_POSITION_PRESSURE" in output
+    assert "Deterministic shortlist:" not in output
+
+    assert "My roster:" in output
     assert "No players drafted yet." in output
+
+    assert "Top available players:" in output
     assert "Top Running Back" in output
-    assert "Flags LAST_IN_TIER,LARGE_TIER_DROP" in output
+    assert "Later Running Back" in output
+    assert "Top Quarterback" in output
+
     assert "Tier scarcity summary:" in output
-    assert "RB: T1: 1, T3: 1" in output
+    assert "Tier coverage:" in output
+
+    assert "Active lookahead:" in output
     assert "Current pick: #5" in output
     assert "My next pick: #17" in output
     assert "Selections before my pick: 12" in output
-    assert "Pick sequence: #5 T5" in output
+
     assert "Opponent lookahead:" in output
     assert "Position exposure before my next pick:" in output
 
@@ -125,7 +130,8 @@ def test_main_reports_on_clock_turn_with_empty_lookahead_and_untiered_player(
     """
     GIVEN: draft slot ten is on the clock at the first-round snake turn
     WHEN: the analyzer CLI runs with untiered optional ranking data
-    THEN: the report shows the roster and no opponent picks before the following turn
+    THEN: the report shows an on-clock recommendation and no opponent picks
+    before the following turn
     """
     _write_workspace(
         tmp_path,
@@ -159,24 +165,37 @@ def test_main_reports_on_clock_turn_with_empty_lookahead_and_untiered_player(
     main()
 
     output = capsys.readouterr().out
+    assert "=== Fantasy Draft Assistant ===" in output
+    assert "League: Test League" in output
+    assert "Current overall pick: 10" in output
     assert "Team currently drafting: 10" in output
+
     assert "Deterministic shortlist:" in output
+    assert "Decision prep shortlist" not in output
+    assert "Desirability" in output
+    assert "Urgency" in output
+    assert "Return risk" in output
     assert "1. Untiered Player | TE T-" in output
-    assert "Return risk UNKNOWN" in output
-    assert "Fit DIRECT_STARTER" in output
-    assert "Tier left -" in output
-    assert "Next -" in output
+    assert "Return risk MEDIUM" in output
+
+    assert "My roster:" in output
     assert "WR: My Wide Receiver (Pick 1)" in output
+
+    assert "Top available players:" in output
     assert "Untiered Player" in output
-    assert "ADP -" in output
-    assert "Drafted -" in output
-    assert "Tier -" in output
-    assert "Remaining -" in output
-    assert "Next -" in output
-    assert "Flags -" in output
+
+    assert "Tier scarcity summary:" in output
     assert "No manual tiers assigned yet." in output
+    assert "Tier coverage:" in output
+    assert "TE: 0/1 players tiered" in output
+
+    assert "Active lookahead:" in output
     assert "I am currently on the clock at #10." in output
     assert "My following pick: #11" in output
     assert "Opponent selections if I wait: 0" in output
+
+    assert "Opponent lookahead:" in output
     assert "No opponent selections in the active lookahead window." in output
+
     assert "Position exposure if I wait until my following pick:" in output
+    assert "Selection chances: 0" in output

@@ -11,6 +11,8 @@ from fantasy_football_agent.draft.models import (
     Player,
 )
 from fantasy_football_agent.draft.recommendations import (
+    AvailabilityRisk,
+    CandidateDesirability,
     CandidateEvaluation,
     DecisionPriority,
     LossCost,
@@ -33,20 +35,23 @@ def _evaluation(
     following_pick: int = 24,
     tier_remaining: int | None = None,
     next_tier: int | None = None,
+    pre_decision_exposure: int = 0,
     return_exposure: int = 0,
     other_flex_eligible_starter_slots_open: int = 0,
+    is_on_clock: bool = True,
 ) -> CandidateEvaluation:
     """Build candidate evidence for recommendation-specific tests."""
     return CandidateEvaluation(
         player=player,
         decision_pick=decision_pick,
         following_pick=following_pick,
+        is_on_clock=is_on_clock,
         roster_fit=roster_fit,
         tier_remaining=tier_remaining,
         next_tier=next_tier,
         scarcity_flags=scarcity_flags,
         adp_value_at_decision=(None if player.adp is None else decision_pick - player.adp),
-        pre_decision_position_exposure=0,
+        pre_decision_position_exposure=pre_decision_exposure,
         return_window_position_exposure=return_exposure,
         other_flex_eligible_starter_slots_open=(other_flex_eligible_starter_slots_open),
     )
@@ -79,6 +84,7 @@ def test_evaluate_candidates_builds_two_decision_horizons(
 
     assert evaluation.decision_pick == 17
     assert evaluation.following_pick == 24
+    assert evaluation.is_on_clock is False
 
 
 def test_evaluate_candidates_reports_direct_starter_fit(
@@ -367,11 +373,12 @@ def test_build_candidate_recommendations_preserves_unknown_return_risk(
     make_player: Callable[..., Player],
 ) -> None:
     """
-    GIVEN: a candidate without market ADP information
+    GIVEN: a later-ranked candidate without ADP information
     WHEN: recommendations are built
-    THEN: return risk remains unknown rather than inventing market timing
+    THEN: return risk remains unknown rather than inventing missing market timing
     """
     player = make_player(
+        rank=40,
         adp=None,
         position="RB",
     )
@@ -379,7 +386,25 @@ def test_build_candidate_recommendations_preserves_unknown_return_risk(
     recommendation = build_candidate_recommendations([_evaluation(player)])[0]
 
     assert recommendation.return_risk == ReturnRisk.UNKNOWN
-    assert recommendation.priority == DecisionPriority.MEDIUM
+
+
+def test_build_candidate_recommendations_uses_rank_when_adp_is_missing(
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: an early-ranked candidate without ADP information
+    WHEN: recommendations are built
+    THEN: Yahoo rank alone produces medium return risk
+    """
+    player = make_player(
+        rank=10,
+        adp=None,
+        position="RB",
+    )
+
+    recommendation = build_candidate_recommendations([_evaluation(player)])[0]
+
+    assert recommendation.return_risk == ReturnRisk.MEDIUM
 
 
 def test_build_candidate_recommendations_separates_tier_loss_from_immediate_urgency(
@@ -391,7 +416,7 @@ def test_build_candidate_recommendations_separates_tier_loss_from_immediate_urge
     THEN: loss cost is high while overall decision priority remains medium
     """
     player = make_player(
-        rank=20,
+        rank=30,
         adp=30.0,
         position="RB",
     )
@@ -472,10 +497,10 @@ def test_build_candidate_recommendations_uses_rank_within_same_priority(
         yahoo_player_id=10010,
     )
     second = make_player(
-        rank=20,
+        rank=15,
         name="Second Player",
         adp=18.0,
-        yahoo_player_id=10020,
+        yahoo_player_id=10015,
     )
 
     recommendations = build_candidate_recommendations(
@@ -551,12 +576,12 @@ def test_build_candidate_recommendations_prioritizes_tier_loss_over_return_risk(
         yahoo_player_id=10038,
     )
     mcmillan = make_player(
-        rank=40,
+        rank=39,
         name="Tetairoa McMillan",
         position="WR",
         adp=41.6,
         manual_tier=4,
-        yahoo_player_id=10040,
+        yahoo_player_id=10039,
     )
 
     recommendations = build_candidate_recommendations(
@@ -680,7 +705,7 @@ def test_build_candidate_recommendations_can_wait_on_high_loss_low_return_risk(
     THEN: loss cost remains high but overall decision priority is only medium
     """
     player = make_player(
-        rank=20,
+        rank=40,
         position="RB",
         adp=40.0,
     )
@@ -871,3 +896,195 @@ def test_evaluate_candidates_counts_other_flex_eligible_starter_slots(
     )[0]
 
     assert evaluation.other_flex_eligible_starter_slots_open == 3
+
+
+def test_build_candidate_recommendations_blocks_later_ranked_scarcity_jump(
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: an early-round starter and a much later-ranked last-in-tier starter
+    WHEN: recommendations are built at pick five
+    THEN: scarcity cannot promote the later-ranked player above the plausible draft window
+    """
+    early_player = make_player(
+        rank=6,
+        name="Early Round Player",
+        position="WR",
+        adp=8.1,
+        yahoo_player_id=10006,
+    )
+    scarce_later_player = make_player(
+        rank=28,
+        name="Scarce Later Player",
+        position="QB",
+        adp=19.6,
+        manual_tier=1,
+        yahoo_player_id=10028,
+    )
+
+    recommendations = build_candidate_recommendations(
+        [
+            _evaluation(
+                scarce_later_player,
+                decision_pick=5,
+                following_pick=16,
+                next_tier=2,
+                scarcity_flags=("LAST_IN_TIER",),
+                return_exposure=10,
+            ),
+            _evaluation(
+                early_player,
+                decision_pick=5,
+                following_pick=16,
+                return_exposure=10,
+            ),
+        ]
+    )
+
+    assert recommendations[0].evaluation.player.name == "Early Round Player"
+    assert recommendations[0].desirability == CandidateDesirability.MEDIUM
+
+    assert recommendations[1].evaluation.player.name == "Scarce Later Player"
+    assert recommendations[1].desirability == CandidateDesirability.LOW
+    assert recommendations[1].loss_cost == LossCost.HIGH
+
+
+def test_build_candidate_recommendations_blocks_late_tier_cliff_jump(
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: a current-window starter and a later-ranked last-in-tier starter
+    WHEN: recommendations are built at pick thirty-six
+    THEN: the later tier cliff cannot leapfrog the current draft window
+    """
+    current_player = make_player(
+        rank=26,
+        name="Current Window Player",
+        position="RB",
+        adp=27.1,
+        yahoo_player_id=10026,
+    )
+    later_tier_cliff = make_player(
+        rank=47,
+        name="Later Tier Cliff",
+        position="RB",
+        adp=41.2,
+        manual_tier=4,
+        yahoo_player_id=10047,
+    )
+
+    recommendations = build_candidate_recommendations(
+        [
+            _evaluation(
+                later_tier_cliff,
+                decision_pick=36,
+                following_pick=45,
+                next_tier=5,
+                scarcity_flags=("LAST_IN_TIER",),
+                return_exposure=8,
+            ),
+            _evaluation(
+                current_player,
+                decision_pick=36,
+                following_pick=45,
+                return_exposure=8,
+            ),
+        ]
+    )
+
+    assert recommendations[0].evaluation.player.name == "Current Window Player"
+    assert recommendations[0].desirability == CandidateDesirability.HIGH
+
+    assert recommendations[1].evaluation.player.name == "Later Tier Cliff"
+    assert recommendations[1].desirability == CandidateDesirability.LOW
+
+
+def test_build_candidate_recommendations_uses_waiting_phase_signals(
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: a highly ranked player while the user is waiting for the next pick
+    WHEN: recommendations are built
+    THEN: the output describes future availability rather than claiming the player already fell
+    """
+    player = make_player(
+        rank=1,
+        adp=1.5,
+        position="RB",
+    )
+
+    recommendation = build_candidate_recommendations(
+        [
+            _evaluation(
+                player,
+                decision_pick=5,
+                following_pick=16,
+                is_on_clock=False,
+                pre_decision_exposure=4,
+                return_exposure=10,
+            )
+        ]
+    )[0]
+
+    assert recommendation.availability_risk == AvailabilityRisk.HIGH
+    assert "VALUE_IF_AVAILABLE_AT_DECISION" in recommendation.signals
+    assert "PRE_DECISION_POSITION_PRESSURE" in recommendation.signals
+    assert "FALLEN_PAST_ADP" not in recommendation.signals
+    assert "RETURN_WINDOW_POSITION_PRESSURE" not in recommendation.signals
+
+
+def test_build_candidate_recommendations_does_not_treat_exposure_as_probability(
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: a later-ranked player with many generic positional opportunities before the next turn
+    WHEN: return risk is calculated
+    THEN: generic exposure alone does not raise a player who both rank and ADP expect later
+    """
+    player = make_player(
+        rank=47,
+        adp=50.0,
+        position="RB",
+    )
+
+    recommendation = build_candidate_recommendations(
+        [
+            _evaluation(
+                player,
+                decision_pick=36,
+                following_pick=45,
+                return_exposure=8,
+            )
+        ]
+    )[0]
+
+    assert recommendation.return_risk == ReturnRisk.LOW
+    assert "RETURN_WINDOW_POSITION_PRESSURE" in recommendation.signals
+
+
+def test_build_candidate_recommendations_marks_market_disagreement_medium_return_risk(
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: Yahoo rank expects a player after the following pick but ADP expects him before it
+    WHEN: return risk is calculated
+    THEN: conflicting market signals produce medium rather than high risk
+    """
+    player = make_player(
+        rank=28,
+        adp=19.6,
+        position="QB",
+    )
+
+    recommendation = build_candidate_recommendations(
+        [
+            _evaluation(
+                player,
+                decision_pick=16,
+                following_pick=25,
+                return_exposure=8,
+            )
+        ]
+    )[0]
+
+    assert recommendation.return_risk == ReturnRisk.MEDIUM
