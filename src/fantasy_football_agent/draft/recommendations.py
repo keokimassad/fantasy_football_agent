@@ -14,6 +14,7 @@ from .state import (
     get_next_pick_for_team,
     get_team_context_for_picks,
     get_team_open_starter_slots,
+    get_team_position_counts,
     team_for_overall_pick,
 )
 
@@ -24,6 +25,15 @@ class RosterFit(StrEnum):
     DIRECT_STARTER = "DIRECT_STARTER"
     FLEX = "FLEX"
     DEPTH = "DEPTH"
+
+
+class PositionDepthNeed(StrEnum):
+    """Describe how strongly the roster still needs depth at a position."""
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
 class ReturnRisk(StrEnum):
@@ -86,6 +96,7 @@ class CandidateEvaluation:
     following_pick: int
     is_on_clock: bool
     roster_fit: RosterFit
+    position_depth_need: PositionDepthNeed
     other_flex_eligible_starter_slots_open: int
     tier_remaining: int | None
     next_tier: int | None
@@ -148,14 +159,46 @@ def _get_roster_fit(
     return RosterFit.DEPTH
 
 
+def _get_position_depth_need(
+    player: Player,
+    state: DraftState,
+    league: LeagueConfig,
+    roster_fit: RosterFit,
+) -> PositionDepthNeed:
+    """Classify how far the roster remains below its position target."""
+    if roster_fit != RosterFit.DEPTH:
+        return PositionDepthNeed.NOT_APPLICABLE
+
+    position_counts = get_team_position_counts(
+        state,
+        state.my_draft_slot,
+    )
+    current_count = position_counts.get(player.position, 0)
+    target_count = league.draft_strategy.position_roster_targets[player.position]
+
+    remaining_to_target = max(
+        target_count - current_count,
+        0,
+    )
+
+    if remaining_to_target >= 2:
+        return PositionDepthNeed.HIGH
+
+    if remaining_to_target == 1:
+        return PositionDepthNeed.MEDIUM
+
+    return PositionDepthNeed.LOW
+
+
 def _get_roster_utility(
     evaluation: CandidateEvaluation,
 ) -> RosterUtility:
     """Estimate immediate roster-construction utility.
 
     Direct starters have high utility. FLEX candidates have reduced utility
-    while other FLEX-eligible dedicated starter slots remain open. Depth
-    candidates have low immediate roster utility.
+    while other FLEX-eligible dedicated starter slots remain open. Bench depth
+    has medium utility while its position remains below the configured roster
+    target and low utility after that target is reached.
     """
     if evaluation.roster_fit == RosterFit.DIRECT_STARTER:
         return RosterUtility.HIGH
@@ -164,6 +207,12 @@ def _get_roster_utility(
         if evaluation.other_flex_eligible_starter_slots_open > 0:
             return RosterUtility.LOW
 
+        return RosterUtility.MEDIUM
+
+    if evaluation.position_depth_need in {
+        PositionDepthNeed.HIGH,
+        PositionDepthNeed.MEDIUM,
+    }:
         return RosterUtility.MEDIUM
 
     return RosterUtility.LOW
@@ -310,19 +359,20 @@ def _get_recommendation_signals(
     if evaluation.is_on_clock:
         if evaluation.adp_value_at_decision is not None and evaluation.adp_value_at_decision > 0:
             signals.append("FALLEN_PAST_ADP")
-
         if evaluation.player.adp is not None and evaluation.player.adp <= evaluation.following_pick:
             signals.append("MARKET_EXPECTED_BEFORE_FOLLOWING_PICK")
-
         if evaluation.return_window_position_exposure > 0:
             signals.append("RETURN_WINDOW_POSITION_PRESSURE")
-
     else:
         if evaluation.adp_value_at_decision is not None and evaluation.adp_value_at_decision > 0:
             signals.append("VALUE_IF_AVAILABLE_AT_DECISION")
-
         if evaluation.pre_decision_position_exposure > 0:
             signals.append("PRE_DECISION_POSITION_PRESSURE")
+
+    if evaluation.position_depth_need == PositionDepthNeed.HIGH:
+        signals.append("HIGH_POSITION_DEPTH_NEED")
+    elif evaluation.position_depth_need == PositionDepthNeed.MEDIUM:
+        signals.append("POSITION_DEPTH_BELOW_TARGET")
 
     return tuple(signals)
 
@@ -375,6 +425,8 @@ def _recommendation_sort_key(
         return (
             _DESIRABILITY_GUARDRAIL_ORDER[recommendation.desirability],
             _DESIRABILITY_ORDER[recommendation.desirability],
+            _ROSTER_UTILITY_ORDER[recommendation.roster_utility],
+            _POSITION_DEPTH_NEED_ORDER[evaluation.position_depth_need],
             evaluation.player.rank,
         )
 
@@ -383,6 +435,8 @@ def _recommendation_sort_key(
         _PRIORITY_ORDER[recommendation.priority],
         _LOSS_COST_ORDER[recommendation.loss_cost],
         _DESIRABILITY_ORDER[recommendation.desirability],
+        _ROSTER_UTILITY_ORDER[recommendation.roster_utility],
+        _POSITION_DEPTH_NEED_ORDER[evaluation.position_depth_need],
         _RETURN_RISK_ORDER[recommendation.return_risk],
         evaluation.player.rank,
     )
@@ -426,6 +480,14 @@ _DESIRABILITY_ORDER = {
     CandidateDesirability.HIGH: 0,
     CandidateDesirability.MEDIUM: 1,
     CandidateDesirability.LOW: 2,
+}
+
+
+_POSITION_DEPTH_NEED_ORDER = {
+    PositionDepthNeed.NOT_APPLICABLE: 0,
+    PositionDepthNeed.HIGH: 0,
+    PositionDepthNeed.MEDIUM: 1,
+    PositionDepthNeed.LOW: 2,
 }
 
 
@@ -510,6 +572,11 @@ def evaluate_candidates(
 
     for player in available_players:
         adp_value_at_decision = None if player.adp is None else decision_pick - player.adp
+        roster_fit = _get_roster_fit(
+            player,
+            state,
+            league,
+        )
 
         evaluations.append(
             CandidateEvaluation(
@@ -517,10 +584,12 @@ def evaluate_candidates(
                 decision_pick=decision_pick,
                 following_pick=following_pick,
                 is_on_clock=is_on_clock,
-                roster_fit=_get_roster_fit(
+                roster_fit=roster_fit,
+                position_depth_need=_get_position_depth_need(
                     player,
                     state,
                     league,
+                    roster_fit,
                 ),
                 other_flex_eligible_starter_slots_open=(
                     _get_other_flex_eligible_starter_slots_open(

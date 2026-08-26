@@ -52,6 +52,16 @@ def test_load_league_config_reads_valid_json(tmp_path: Path) -> None:
                 },
                 "flex_positions": ["RB", "WR", "TE"],
                 "scoring": {},
+                "draft_strategy": {
+                    "position_roster_targets": {
+                        "QB": 1,
+                        "RB": 4,
+                        "WR": 4,
+                        "TE": 1,
+                        "K": 1,
+                        "DEF": 1,
+                    }
+                },
             }
         ),
         encoding="utf-8",
