@@ -24,7 +24,7 @@ def _chat_pick(
     overall: int,
     player_reference: str,
     position: str,
-    team: str,
+    team: str | None,
     drafter: str = "Other",
     bye: int | None = None,
 ) -> YahooDraftChatPick:
@@ -289,3 +289,46 @@ def test_reconcile_rejects_you_pick_owned_by_different_slot(
                 team="TST",
             ),
         )
+
+
+def test_reconcile_records_defense_without_chat_team_code(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: local state waiting for a Yahoo defense selection without a team-code
+    WHEN: that defense is reconciled
+    THEN: the defense is recorded and draft state advances normally
+    """
+    state = make_draft_state(
+        my_draft_slot=4,
+        current_overall_pick=4,
+    )
+    rams = make_player(
+        name="Los Angeles",
+        position="DEF",
+        team="LAR",
+        bye=11,
+        yahoo_player_id=50001,
+    )
+
+    result = reconcile_yahoo_chat_pick(
+        state,
+        league_config,
+        [rams],
+        _chat_pick(
+            overall=4,
+            drafter="You",
+            player_reference="Rams",
+            position="DEF",
+            team=None,
+            bye=11,
+        ),
+    )
+
+    assert result.action == "recorded"
+    assert result.pick.player == "Los Angeles"
+    assert result.pick.position == "DEF"
+    assert result.pick.yahoo_player_id == 50001
+    assert state.current_overall_pick == 5

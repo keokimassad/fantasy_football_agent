@@ -507,3 +507,92 @@ def test_resolve_yahoo_chat_player_rejects_when_all_matches_are_excluded(
             chat_pick,
             excluded_yahoo_player_ids={nabers.yahoo_player_id},
         )
+
+
+def test_parse_yahoo_chat_accepts_defense_without_team_code() -> None:
+    """
+    GIVEN: Yahoo draft chat containing normal players followed by a defense
+    WHEN: the copied text is parsed
+    THEN: the defense is retained without requiring a team-code line
+    """
+    text = """
+    1
+    Mr. Biggs
+    B. Robinson
+    B. Robinson
+    RB
+    Atl
+    Bye 11
+    2
+    Andrew
+    J. Gibbs
+    J. Gibbs
+    RB
+    Det
+    Bye 6
+    3
+    Team 3
+    J. Chase
+    J. Chase
+    WR
+    Cin
+    Bye 6
+    4
+    You
+    Rams
+    Rams
+    DEF
+    Bye 11
+    """
+
+    picks = parse_yahoo_draft_chat(text)
+
+    assert [pick.overall for pick in picks] == [1, 2, 3, 4]
+    assert picks[0].status is None
+    assert picks[3] == YahooDraftChatPick(
+        overall=4,
+        drafter="You",
+        player_reference="Rams",
+        position="DEF",
+        team=None,
+        bye=11,
+    )
+
+
+def test_resolve_yahoo_chat_defense_uses_defense_nickname(
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: two Los Angeles defenses whose Yahoo chat reference is Rams
+    WHEN: the defense selection is resolved without a chat team-code
+    THEN: the Rams team identity selects the LAR defense
+    """
+    rams = make_player(
+        name="Los Angeles",
+        position="DEF",
+        team="LAR",
+        bye=11,
+        yahoo_player_id=50001,
+    )
+    chargers = make_player(
+        name="Los Angeles",
+        position="DEF",
+        team="LAC",
+        bye=11,
+        yahoo_player_id=50002,
+    )
+    chat_pick = YahooDraftChatPick(
+        overall=102,
+        drafter="DC",
+        player_reference="Rams",
+        position="DEF",
+        team=None,
+        bye=11,
+    )
+
+    resolved = resolve_yahoo_chat_player(
+        [chargers, rams],
+        chat_pick,
+    )
+
+    assert resolved is rams

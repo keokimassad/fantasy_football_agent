@@ -127,7 +127,9 @@ def reconcile_yahoo_chat_pick(
         raise YahooDraftSyncError(
             f"Draft gap detected: local state expects pick "
             f"#{state.current_overall_pick}, but Yahoo supplied "
-            f"pick #{chat_pick.overall}."
+            f"pick #{chat_pick.overall}. The expected pick is missing "
+            f"from parsed Yahoo selections; the copied range may omit it "
+            f"or its Yahoo block format may be unsupported."
         )
 
     if chat_pick.overall < state.current_overall_pick:
