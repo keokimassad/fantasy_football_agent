@@ -4,6 +4,29 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+@dataclass(frozen=True)
+class DraftStrategyConfig:
+    """Represent user-controlled roster-construction targets.
+
+    A position roster target indicates the roster count below which additional
+    players at that position receive extra roster-construction consideration.
+    Reaching the target does not prevent drafting additional players at that
+    position.
+    """
+
+    position_roster_targets: dict[str, int]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DraftStrategyConfig":
+        """Build draft-strategy settings from JSON-compatible input."""
+        return cls(
+            position_roster_targets={
+                str(position).upper(): int(target)
+                for position, target in data["position_roster_targets"].items()
+            }
+        )
+
+
 @dataclass
 class LeagueConfig:
     """Represent league rules and roster settings that affect draft decisions."""
@@ -14,6 +37,7 @@ class LeagueConfig:
     roster: dict[str, int]
     flex_positions: list[str]
     scoring: dict[str, Any]
+    draft_strategy: DraftStrategyConfig
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LeagueConfig":
@@ -25,6 +49,7 @@ class LeagueConfig:
             roster=data["roster"],
             flex_positions=data["flex_positions"],
             scoring=data["scoring"],
+            draft_strategy=DraftStrategyConfig.from_dict(data["draft_strategy"]),
         )
 
 

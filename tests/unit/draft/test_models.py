@@ -5,6 +5,7 @@ import pytest
 from fantasy_football_agent.draft.models import (
     DraftPick,
     DraftState,
+    DraftStrategyConfig,
     LeagueConfig,
 )
 
@@ -34,6 +35,16 @@ def test_league_config_from_dict_reconstructs_league_settings() -> None:
         },
         "flex_positions": ["RB", "WR", "TE"],
         "scoring": {"receptions": 0.5},
+        "draft_strategy": {
+            "position_roster_targets": {
+                "QB": 1,
+                "RB": 4,
+                "WR": 4,
+                "TE": 1,
+                "K": 1,
+                "DEF": 1,
+            }
+        },
     }
 
     league = LeagueConfig.from_dict(data)
@@ -55,6 +66,16 @@ def test_league_config_from_dict_reconstructs_league_settings() -> None:
         },
         flex_positions=["RB", "WR", "TE"],
         scoring={"receptions": 0.5},
+        draft_strategy=DraftStrategyConfig(
+            position_roster_targets={
+                "QB": 1,
+                "RB": 4,
+                "WR": 4,
+                "TE": 1,
+                "K": 1,
+                "DEF": 1,
+            }
+        ),
     )
 
 

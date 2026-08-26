@@ -7,6 +7,7 @@ import pytest
 from fantasy_football_agent.draft.models import (
     DraftPick,
     DraftState,
+    DraftStrategyConfig,
     LeagueConfig,
     Player,
 )
@@ -38,6 +39,16 @@ def make_league_config() -> Callable[..., LeagueConfig]:
             },
             flex_positions=["RB", "WR", "TE"],
             scoring={},
+            draft_strategy=DraftStrategyConfig(
+                position_roster_targets={
+                    "QB": 1,
+                    "RB": 4,
+                    "WR": 4,
+                    "TE": 1,
+                    "K": 1,
+                    "DEF": 1,
+                }
+            ),
         )
 
     return make

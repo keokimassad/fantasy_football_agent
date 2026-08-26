@@ -38,6 +38,16 @@ def _write_workspace(
         },
         "flex_positions": ["RB", "WR", "TE"],
         "scoring": {"receptions": 0.5},
+        "draft_strategy": {
+            "position_roster_targets": {
+                "QB": 1,
+                "RB": 4,
+                "WR": 4,
+                "TE": 1,
+                "K": 1,
+                "DEF": 1,
+            }
+        },
     }
 
     (workspace / "config" / "league.json").write_text(
