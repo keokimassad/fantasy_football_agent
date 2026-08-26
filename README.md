@@ -29,6 +29,7 @@ Future AI functionality will consume those results rather than recreate them.
 - Load and validate league configuration and persisted draft state.
 - Model snake-draft ownership, including turn picks.
 - Track rosters and open starter slots, including FLEX overflow.
+- Apply configurable soft roster targets by position to identify meaningful bench-depth needs.
 - Load Yahoo-derived rankings with:
   - Yahoo rank;
   - ADP;
@@ -55,6 +56,7 @@ Future AI functionality will consume those results rather than recreate them.
   - cross-position candidate desirability;
   - roster fit;
   - roster utility;
+  - position depth need;
   - availability risk while waiting for the next pick;
   - return risk while on the clock;
   - loss cost;
@@ -135,6 +137,23 @@ Describes how useful that roster fit is **right now**.
 
 For example, a second TE may technically fit in FLEX, but its immediate roster utility can
 be lower while dedicated RB or WR starter slots remain open.
+
+### Position Depth Need
+
+Describes whether a `DEPTH` candidate helps fill a configured roster-construction target:
+
+- `HIGH` — the roster is at least two players below the position target;
+- `MEDIUM` — the roster is one player below the position target;
+- `LOW` — the configured position target has been reached;
+- `NOT_APPLICABLE` — the candidate is not currently a depth fit.
+
+Position roster targets are **soft targets, not roster caps**. Reaching a target does not
+prevent or prohibit another player at that position. Instead, the target provides
+roster-construction context when otherwise-plausible candidates have comparable market value.
+
+Needed bench depth can raise immediate roster utility from `LOW` to `MEDIUM`, but it does not
+become `HIGH` solely because a position is below target. Yahoo rank/desirability remains the
+cross-position guardrail.
 
 ### Availability Risk
 
@@ -271,6 +290,24 @@ The ranking CSV schema is:
 ```text
 Rank,ADP,Player Name,Position,Team,Bye,% Drafted,Yahoo Player ID,Manual - Tier
 ```
+
+League configuration also includes soft draft-strategy targets, for example:
+
+```json
+"draft_strategy": {
+  "position_roster_targets": {
+    "QB": 1,
+    "RB": 4,
+    "WR": 4,
+    "TE": 1,
+    "K": 1,
+    "DEF": 1
+  }
+}
+```
+
+These values describe when additional depth should receive extra roster-construction
+consideration. They do not prevent drafting beyond the target.
 
 ## CLI Commands
 
@@ -519,6 +556,7 @@ Important areas include:
 - candidate desirability;
 - roster fit;
 - roster utility;
+- position depth need and soft roster targets;
 - availability risk;
 - return risk;
 - loss cost;
@@ -550,8 +588,8 @@ with the provider's terms.
 
 ## Roadmap
 
-The deterministic recommendation layer is now phase-aware and ready for additional mock
-validation.
+The deterministic recommendation layer is now phase-aware and position-depth-aware, and is
+ready for additional mock validation.
 
 Next priorities:
 

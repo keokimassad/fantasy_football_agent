@@ -140,6 +140,28 @@ Describes the immediate value of that roster fit.
 FLEX eligibility is not the same as optimal FLEX usage. A second TE can be eligible for
 FLEX while still having lower immediate utility when RB or WR starter slots remain open.
 
+### Position Depth Need
+
+Bench-depth strategy is configured through `LeagueConfig.draft_strategy.position_roster_targets`.
+
+For candidates whose `RosterFit` is `DEPTH`, `PositionDepthNeed` describes how far the current
+roster remains below the configured target:
+
+```text
+HIGH            two or more players below target
+MEDIUM          one player below target
+LOW             target reached
+NOT_APPLICABLE  candidate is not a depth fit
+```
+
+These are soft roster-construction targets, not caps. Reaching a target must not block or
+automatically penalize an otherwise valuable player. Likewise, being below target does not
+make bench depth a `HIGH`-utility candidate by itself. Needed depth currently raises roster
+utility to `MEDIUM`, preserving the Yahoo-rank/desirability cross-position guardrail.
+
+Depth need should remain an explicit typed domain concept rather than being hidden inside an
+opaque position bonus or numerical score.
+
 ### Availability Risk
 
 Used while waiting for the user's next decision.
@@ -338,6 +360,11 @@ python tools/check_test_docstrings.py
 
 The docstring should describe behavior rather than implementation details.
 
+Larger test modules use semantic `Test...` classes to group related behavior. The class name
+should provide the broad context while the individual test method names only describe the
+distinguishing scenario. Keep the full GIVEN/WHEN/THEN detail in the docstring rather than
+encoding the entire scenario into an excessively long function name.
+
 ## Targeted Test Commands
 
 Recommendation layer:
@@ -414,6 +441,7 @@ Important deterministic behavior includes:
 - candidate desirability;
 - roster fit;
 - roster utility;
+- position depth need and soft roster targets;
 - availability risk;
 - return risk;
 - loss cost;
@@ -436,7 +464,11 @@ Useful examples already represented by the model include:
   because of scarcity;
 - generic opponent position exposure does not independently become return probability;
 - missing ADP can still yield medium return risk when Yahoo rank supplies meaningful market
-  evidence.
+  evidence;
+- needed RB depth can outrank comparable excess WR depth after the WR target is reached;
+- a roster with RB2 / WR4 should not produce a WR-only top three when viable RB depth exists;
+- at RB2 / WR5, viable RB3 depth should be strongly elevated over excess WR depth when market
+  value remains plausible.
 
 Avoid player-specific hard-coding.
 
@@ -599,7 +631,11 @@ When on the clock, expected behavior is:
 - heading is `Deterministic shortlist:`;
 - `Desirability`, `Roster utility`, `Loss cost`, `Return risk`, and `Urgency` are visible;
 - `FALLEN_PAST_ADP` may appear when it is factually true at the current pick;
-- raw opponent exposure remains explanatory context rather than probability.
+- raw opponent exposure remains explanatory context rather than probability;
+- depth candidates below their position target expose `HIGH_POSITION_DEPTH_NEED` or
+  `POSITION_DEPTH_BELOW_TARGET` as appropriate;
+- positions that have reached their target remain eligible for additional value picks rather
+  than being treated as hard caps.
 
 When a recommendation feels wrong, record:
 
@@ -640,12 +676,13 @@ When changing recommendation behavior:
 3. preserve the distinction between waiting and on-clock phases;
 4. keep tier scarcity as replacement-cost/urgency evidence rather than universal value;
 5. treat generic opponent exposure as evidence, not probability;
-6. add one domain concept at a time;
-7. write regression tests from realistic scenarios;
-8. avoid player-specific logic;
-9. avoid arbitrary position penalties;
-10. preserve explainability;
-11. rerun a real mock after meaningful changes.
+6. treat position roster targets as soft construction guidance, not hard caps;
+7. add one domain concept at a time;
+8. write regression tests from realistic scenarios;
+9. avoid player-specific production logic;
+10. avoid arbitrary position penalties or hidden numerical bonuses;
+11. preserve explainability;
+12. rerun a real mock after meaningful changes.
 
 ## Future News / Injury Context
 
@@ -746,7 +783,7 @@ If public capabilities or developer workflow changed, update both `README.md` an
 
 ## Current Milestone
 
-The project is now **mock-draft ready with phase-aware deterministic recommendations**.
+The project is now **mock-draft ready with phase-aware, position-depth-aware deterministic recommendations**.
 
 Completed foundations:
 
@@ -769,7 +806,11 @@ Completed foundations:
     value;
 17. opponent exposure retained as deterministic context rather than probability;
 18. explainable top-five deterministic recommendations;
-19. phase-aware CLI recommendation presentation.
+19. phase-aware CLI recommendation presentation;
+20. configurable soft position roster targets;
+21. typed position-depth need integrated into roster utility and recommendation ordering;
+22. late-round mock regressions covering RB-depth vs excess-WR construction;
+23. semantic `Test...` class organization for larger test modules.
 
 Next sequence:
 
