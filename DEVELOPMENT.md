@@ -101,15 +101,19 @@ Keep these concepts distinct.
 The user's valuation of a player **within that player's position**.
 
 Manual tiers are position-relative and must not be converted into a naive universal score.
+Track tier quality relative to the best currently available tier **within the same position**.
 Tier scarcity describes replacement pain; it does not independently create cross-position
-player value.
+player value, and a singleton in a worse tier must not receive premium loss cost while a
+better same-position tier remains available.
 
 ### Yahoo Rank / ADP
 
 Market evidence.
 
-- Yahoo rank is the primary deterministic cross-position guardrail.
-- ADP supplies an independent market-timing signal.
+- Yahoo rank and ADP jointly define the deterministic cross-position market window.
+- When ADP exists, use the simple Rank/ADP midpoint as the transparent market-consensus
+  estimate for desirability and close ordering decisions.
+- Keep rank and ADP separately available for return-risk, availability-risk, and explanation.
 - A player falling past ADP can be surfaced as value only when the user is actually on the
   clock.
 - ADP does not become factual draft state.
@@ -120,8 +124,9 @@ Answers:
 
 > Is this player a plausible cross-position selection in the current draft window?
 
-Desirability prevents urgency/scarcity from making a substantially later-ranked player look
-like the best overall selection solely because that player is last in a positional tier.
+Desirability prevents urgency/scarcity from making a substantially later market candidate
+look like the best overall selection solely because that player is last in a positional tier.
+It must not use Yahoo rank alone as a hard bucket boundary when ADP materially disagrees.
 
 ### Roster Fit
 
@@ -139,6 +144,9 @@ Describes the immediate value of that roster fit.
 
 FLEX eligibility is not the same as optimal FLEX usage. A second TE can be eligible for
 FLEX while still having lower immediate utility when RB or WR starter slots remain open.
+When on-clock candidates share the same desirability band, immediate roster utility should
+be considered before scarcity/urgency so a low-utility FLEX option does not displace a
+high-utility direct starter solely because it is last in tier.
 
 ### Position Depth Need
 
@@ -157,7 +165,7 @@ NOT_APPLICABLE  candidate is not a depth fit
 These are soft roster-construction targets, not caps. Reaching a target must not block or
 automatically penalize an otherwise valuable player. Likewise, being below target does not
 make bench depth a `HIGH`-utility candidate by itself. Needed depth currently raises roster
-utility to `MEDIUM`, preserving the Yahoo-rank/desirability cross-position guardrail.
+utility to `MEDIUM`, preserving the market-consensus desirability cross-position guardrail.
 
 Depth need should remain an explicit typed domain concept rather than being hidden inside an
 opaque position bonus or numerical score.
@@ -172,7 +180,9 @@ Answers:
 
 Current market inputs are Yahoo rank and ADP. The waiting phase uses preparation-oriented
 signals such as `VALUE_IF_AVAILABLE_AT_DECISION` rather than claiming a player has already
-fallen past ADP.
+fallen past ADP. Within the same position and otherwise-equal decision band, position-relative
+tier quality breaks close ordering ties before small Rank/ADP differences. Do not apply that
+tier comparison across positions.
 
 ### Return Risk
 
@@ -196,9 +206,12 @@ Current inputs include:
 - roster fit;
 - last-in-tier evidence;
 - known next-tier information;
-- large tier drops.
+- large tier drops;
+- whether the candidate is in the best currently available tier at that position.
 
-High loss cost does not automatically mean the candidate has high cross-position value.
+High loss cost does not automatically mean the candidate has high cross-position value. A
+last player in a worse available tier remains evidence, but it must not become `HIGH` loss
+cost while a better tier at the same position is still available.
 
 ### Decision Priority / Urgency
 
@@ -210,7 +223,9 @@ should remain visible and independently testable.
 
 ## Phase-Aware Recommendation Flow
 
-Candidate evaluation models two distinct horizons and two user-facing phases.
+Candidate evaluation models two distinct horizons and two user-facing phases. Both horizons
+are bounded by `get_total_draft_picks(league)` so snake-order arithmetic cannot create a
+fictional post-draft user turn.
 
 ```text
 current pick
@@ -460,8 +475,12 @@ Useful examples already represented by the model include:
 - FLEX eligibility can coexist with low immediate roster utility;
 - a dedicated starter can outrank an early FLEX candidate even when Yahoo rank slightly
   favors the FLEX candidate;
-- a much later-ranked last-in-tier player cannot leapfrog the plausible draft window solely
+- a substantially later market candidate cannot leapfrog the plausible draft window solely
   because of scarcity;
+- a small Yahoo-rank edge cannot override materially better ADP plus a better same-position
+  tier when both players remain in the same plausible market window;
+- a last player in a worse same-position tier cannot receive premium loss cost while a better
+  tier remains available;
 - generic opponent position exposure does not independently become return probability;
 - missing ADP can still yield medium return risk when Yahoo rank supplies meaningful market
   evidence;
@@ -617,8 +636,13 @@ Expected waiting-phase behavior:
 - `Desirability` and `Availability risk` are visible;
 - preparation signals can include `VALUE_IF_AVAILABLE_AT_DECISION`;
 - `FALLEN_PAST_ADP` is not emitted before the user is on the clock;
-- later-ranked positional scarcity does not leapfrog the plausible cross-position market
-  window.
+- substantially later positional scarcity does not leapfrog the plausible cross-position
+  market window;
+- the waiting shortlist can surface a different open-starter position when Rank/ADP consensus
+  makes that candidate more plausible than a rank-only cutoff would suggest;
+- comparable same-position candidates respect position-relative manual-tier quality before
+  a small raw market-order difference;
+- late-round lookahead never reports a user pick beyond the configured draft endpoint.
 
 After Yahoo Draft Chat contains selections, copy a recent overlapping range and run:
 
@@ -635,7 +659,10 @@ When on the clock, expected behavior is:
 - depth candidates below their position target expose `HIGH_POSITION_DEPTH_NEED` or
   `POSITION_DEPTH_BELOW_TARGET` as appropriate;
 - positions that have reached their target remain eligible for additional value picks rather
-  than being treated as hard caps.
+  than being treated as hard caps;
+- within the same desirability band, high immediate roster utility precedes scarcity-driven
+  urgency when the alternative is a low-utility FLEX candidate;
+- a manager's final selection has no fictional following snake turn beyond the draft endpoint.
 
 When a recommendation feels wrong, record:
 
@@ -675,14 +702,21 @@ When changing recommendation behavior:
 2. preserve the distinction between desirability and urgency;
 3. preserve the distinction between waiting and on-clock phases;
 4. keep tier scarcity as replacement-cost/urgency evidence rather than universal value;
-5. treat generic opponent exposure as evidence, not probability;
-6. treat position roster targets as soft construction guidance, not hard caps;
-7. add one domain concept at a time;
-8. write regression tests from realistic scenarios;
-9. avoid player-specific production logic;
-10. avoid arbitrary position penalties or hidden numerical bonuses;
-11. preserve explainability;
-12. rerun a real mock after meaningful changes.
+5. compare tier quality only relative to the best available tier at the same position;
+6. use Rank/ADP market consensus for desirability instead of letting either source own the
+   bucket boundary;
+7. use same-position tier quality only inside an otherwise-comparable decision band;
+8. give immediate roster utility precedence over scarcity when on-clock candidates share the
+   same desirability band;
+9. bound all future-pick/lookahead calculations to the configured draft endpoint;
+10. treat generic opponent exposure as evidence, not probability;
+11. treat position roster targets as soft construction guidance, not hard caps;
+12. add one domain concept at a time;
+13. write regression tests from realistic scenarios;
+14. avoid player-specific production logic;
+15. avoid arbitrary position penalties or hidden numerical bonuses;
+16. preserve explainability;
+17. rerun a real mock after meaningful changes.
 
 ## Future News / Injury Context
 
@@ -731,10 +765,14 @@ Likely input:
 ```text
 DraftState summary
 current recommendation phase
-CandidateRecommendation[]
+broader plausible CandidateRecommendation[] / CandidateEvaluation[] packet
 PlayerContext[]
 small league context
 ```
+
+Do not restrict the AI to only the five candidates rendered for compact human review. The
+AI may consume a broader deterministic candidate packet, while the top-five shortlist remains
+the fast manual fallback.
 
 Likely output:
 
@@ -802,23 +840,28 @@ Completed foundations:
 13. availability-risk heuristics;
 14. return-risk heuristics using Yahoo rank and ADP market evidence;
 15. tier loss-cost modeling;
-16. market guardrails preventing scarcity from independently overpowering cross-position
+16. Rank/ADP market-consensus desirability so neither market source owns the hard bucket
+    boundary;
+17. position-relative tier-gap handling so worse-tier scarcity cannot overpower better
+    same-position options;
+18. market guardrails preventing scarcity from independently overpowering cross-position
     value;
-17. opponent exposure retained as deterministic context rather than probability;
-18. explainable top-five deterministic recommendations;
-19. phase-aware CLI recommendation presentation;
-20. configurable soft position roster targets;
-21. typed position-depth need integrated into roster utility and recommendation ordering;
-22. late-round mock regressions covering RB-depth vs excess-WR construction;
-23. semantic `Test...` class organization for larger test modules.
+19. opponent exposure retained as deterministic context rather than probability;
+20. explainable top-five deterministic recommendations;
+21. phase-aware CLI recommendation presentation;
+22. configurable soft position roster targets;
+23. typed position-depth need integrated into roster utility and recommendation ordering;
+24. real-mock regressions covering same-position Rank/ADP disagreement, tier-quality
+    scarcity, shortlist composition, and RB-depth vs excess-WR construction;
+25. semantic `Test...` class organization for larger test modules.
 
 Next sequence:
 
-1. run additional real Yahoo mocks;
+1. run one more targeted Yahoo mock against the market-consensus/tier-gap regressions;
 2. collect recommendation regressions and timing feedback;
 3. refine compact live-draft UX;
 4. add recent-news and injury context;
-5. add one AI recommendation agent;
+5. add one AI recommendation agent over a broader deterministic candidate packet;
 6. run AI-assisted mocks;
 7. harden fallback and failure behavior;
 8. evaluate richer Yahoo API ingestion when available.

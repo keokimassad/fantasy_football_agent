@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cmp_to_key
 
 from .analysis import get_position_exposure
 from .models import DraftState, LeagueConfig, Player
@@ -14,7 +15,9 @@ from .state import (
     get_next_pick_for_team,
     get_team_context_for_picks,
     get_team_open_starter_slots,
+    get_team_optional_draft_capacity,
     get_team_position_counts,
+    get_total_draft_picks,
     team_for_overall_pick,
 )
 
@@ -100,7 +103,9 @@ class CandidateEvaluation:
     other_flex_eligible_starter_slots_open: int
     tier_remaining: int | None
     next_tier: int | None
+    position_tier_gap: int | None
     scarcity_flags: tuple[str, ...]
+    market_pick_estimate: float
     adp_value_at_decision: float | None
     pre_decision_position_exposure: int
     return_window_position_exposure: int
@@ -218,25 +223,63 @@ def _get_roster_utility(
     return RosterUtility.LOW
 
 
+def _get_market_pick_estimate(player: Player) -> float:
+    """Return a transparent Rank/ADP consensus estimate for draft-window ordering.
+
+    Yahoo rank and ADP are treated as independent market observations. When both are
+    available, their midpoint prevents either source from owning the draft-window
+    boundary by itself. Yahoo rank remains the fallback when ADP is unavailable.
+    """
+    if player.adp is None:
+        return float(player.rank)
+
+    return (player.rank + player.adp) / 2
+
+
+def _get_position_tier_gap(
+    available_players: list[Player],
+    player: Player,
+) -> int | None:
+    """Return how many manual tiers trail the best available tier at the position.
+
+    The value is position-relative. A gap of zero means the candidate is in the best
+    currently available manual tier for that position. Untiered candidates remain
+    unknown rather than being treated as worse than tiered candidates.
+    """
+    if player.manual_tier is None:
+        return None
+
+    available_tiers = [
+        candidate.manual_tier
+        for candidate in available_players
+        if candidate.position == player.position and candidate.manual_tier is not None
+    ]
+    if not available_tiers:
+        return None
+
+    return max(player.manual_tier - min(available_tiers), 0)
+
+
 def _get_candidate_desirability(
     evaluation: CandidateEvaluation,
     roster_utility: RosterUtility,
 ) -> CandidateDesirability:
-    """Classify cross-position selection plausibility from Yahoo rank and roster utility.
+    """Classify cross-position plausibility from market consensus and roster utility.
 
-    Yahoo rank remains the cross-position value baseline. Scarcity and return risk may
-    reorder candidates inside the plausible draft window, but should not promote a
-    substantially later-ranked player solely because that player is scarce.
+    The Rank/ADP midpoint is the deterministic cross-position guardrail. Scarcity,
+    same-position tier quality, and return risk may reorder candidates inside a
+    plausible market window, but cannot independently promote a substantially later
+    player over clearly earlier market value.
     """
-    rank = evaluation.player.rank
+    market_pick_estimate = evaluation.market_pick_estimate
 
-    if rank <= evaluation.decision_pick:
+    if market_pick_estimate <= evaluation.decision_pick:
         if roster_utility == RosterUtility.HIGH:
             return CandidateDesirability.HIGH
 
         return CandidateDesirability.MEDIUM
 
-    if rank <= evaluation.following_pick and roster_utility != RosterUtility.LOW:
+    if market_pick_estimate <= evaluation.following_pick and roster_utility != RosterUtility.LOW:
         return CandidateDesirability.MEDIUM
 
     return CandidateDesirability.LOW
@@ -309,9 +352,12 @@ def _get_loss_cost(
     last_in_tier = "LAST_IN_TIER" in evaluation.scarcity_flags
     large_tier_drop = "LARGE_TIER_DROP" in evaluation.scarcity_flags
     has_known_next_tier = evaluation.next_tier is not None
+    is_best_available_position_tier = evaluation.position_tier_gap in {None, 0}
 
-    if evaluation.roster_fit != RosterFit.DEPTH and (
-        large_tier_drop or (last_in_tier and has_known_next_tier)
+    if (
+        evaluation.roster_fit != RosterFit.DEPTH
+        and is_best_available_position_tier
+        and (large_tier_drop or (last_in_tier and has_known_next_tier))
     ):
         return LossCost.HIGH
 
@@ -415,31 +461,92 @@ def _get_decision_priority(
     return DecisionPriority.LOW
 
 
-def _recommendation_sort_key(
-    recommendation: CandidateRecommendation,
-) -> tuple[int, ...]:
-    """Return a phase-aware deterministic shortlist ordering."""
-    evaluation = recommendation.evaluation
+def _adp_sort_value(player: Player) -> float:
+    """Return ADP for deterministic tie-breaking, with missing ADP sorted last."""
+    return float("inf") if player.adp is None else player.adp
 
-    if not evaluation.is_on_clock:
-        return (
-            _DESIRABILITY_GUARDRAIL_ORDER[recommendation.desirability],
-            _DESIRABILITY_ORDER[recommendation.desirability],
-            _ROSTER_UTILITY_ORDER[recommendation.roster_utility],
-            _POSITION_DEPTH_NEED_ORDER[evaluation.position_depth_need],
-            evaluation.player.rank,
+
+def _position_tier_gap_sort_value(evaluation: CandidateEvaluation) -> int:
+    """Return a neutral tier-gap sort value when manual tier evidence is unknown."""
+    return 0 if evaluation.position_tier_gap is None else evaluation.position_tier_gap
+
+
+def _compare_ordered_values(left: tuple[int | float, ...], right: tuple[int | float, ...]) -> int:
+    """Compare two deterministic sort tuples using normal ascending order."""
+    return (left > right) - (left < right)
+
+
+def _recommendation_compare(
+    left: CandidateRecommendation,
+    right: CandidateRecommendation,
+) -> int:
+    """Compare recommendations without treating manual tiers as cross-position scores.
+
+    Broad cross-position ordering is still driven by desirability, roster utility, and
+    market evidence. Once two candidates at the same position are otherwise in the same
+    decision band, position-relative tier quality is allowed to break the tie before the
+    small Rank/ADP differences that produced several mock-draft regressions.
+    """
+    left_evaluation = left.evaluation
+    right_evaluation = right.evaluation
+
+    left_prefix: tuple[int, ...]
+    right_prefix: tuple[int, ...]
+
+    if not left_evaluation.is_on_clock:
+        left_prefix = (
+            _DESIRABILITY_GUARDRAIL_ORDER[left.desirability],
+            _DESIRABILITY_ORDER[left.desirability],
+            _ROSTER_UTILITY_ORDER[left.roster_utility],
+            _POSITION_DEPTH_NEED_ORDER[left_evaluation.position_depth_need],
+        )
+        right_prefix = (
+            _DESIRABILITY_GUARDRAIL_ORDER[right.desirability],
+            _DESIRABILITY_ORDER[right.desirability],
+            _ROSTER_UTILITY_ORDER[right.roster_utility],
+            _POSITION_DEPTH_NEED_ORDER[right_evaluation.position_depth_need],
+        )
+    else:
+        left_prefix = (
+            _DESIRABILITY_ORDER[left.desirability],
+            _ROSTER_UTILITY_ORDER[left.roster_utility],
+            _PRIORITY_ORDER[left.priority],
+            _LOSS_COST_ORDER[left.loss_cost],
+            _POSITION_DEPTH_NEED_ORDER[left_evaluation.position_depth_need],
+            _RETURN_RISK_ORDER[left.return_risk],
+        )
+        right_prefix = (
+            _DESIRABILITY_ORDER[right.desirability],
+            _ROSTER_UTILITY_ORDER[right.roster_utility],
+            _PRIORITY_ORDER[right.priority],
+            _LOSS_COST_ORDER[right.loss_cost],
+            _POSITION_DEPTH_NEED_ORDER[right_evaluation.position_depth_need],
+            _RETURN_RISK_ORDER[right.return_risk],
         )
 
-    return (
-        _DESIRABILITY_GUARDRAIL_ORDER[recommendation.desirability],
-        _PRIORITY_ORDER[recommendation.priority],
-        _LOSS_COST_ORDER[recommendation.loss_cost],
-        _DESIRABILITY_ORDER[recommendation.desirability],
-        _ROSTER_UTILITY_ORDER[recommendation.roster_utility],
-        _POSITION_DEPTH_NEED_ORDER[evaluation.position_depth_need],
-        _RETURN_RISK_ORDER[recommendation.return_risk],
-        evaluation.player.rank,
+    prefix_comparison = _compare_ordered_values(left_prefix, right_prefix)
+    if prefix_comparison:
+        return prefix_comparison
+
+    if left_evaluation.player.position == right_evaluation.player.position:
+        tier_comparison = _compare_ordered_values(
+            (_position_tier_gap_sort_value(left_evaluation),),
+            (_position_tier_gap_sort_value(right_evaluation),),
+        )
+        if tier_comparison:
+            return tier_comparison
+
+    left_market = (
+        left_evaluation.market_pick_estimate,
+        _adp_sort_value(left_evaluation.player),
+        left_evaluation.player.rank,
     )
+    right_market = (
+        right_evaluation.market_pick_estimate,
+        _adp_sort_value(right_evaluation.player),
+        right_evaluation.player.rank,
+    )
+    return _compare_ordered_values(left_market, right_market)
 
 
 _PRIORITY_ORDER = {
@@ -514,19 +621,26 @@ def evaluate_candidates(
     Returns:
         Candidate evaluations preserving the input ranking order.
     """
+    final_pick = get_total_draft_picks(league)
     decision_pick = get_next_pick_for_team(
         current_overall_pick=state.current_overall_pick,
         team_id=state.my_draft_slot,
         teams=league.teams,
         include_current=True,
+        max_overall_pick=final_pick,
     )
 
-    following_pick = get_next_pick_for_team(
+    if decision_pick is None:
+        return []
+
+    next_user_pick = get_next_pick_for_team(
         current_overall_pick=decision_pick,
         team_id=state.my_draft_slot,
         teams=league.teams,
         include_current=False,
+        max_overall_pick=final_pick,
     )
+    following_pick = next_user_pick if next_user_pick is not None else final_pick + 1
 
     pre_decision_picks = _build_pick_window(
         state.current_overall_pick,
@@ -568,6 +682,15 @@ def evaluate_candidates(
         == state.my_draft_slot
     )
 
+    optional_draft_capacity = get_team_optional_draft_capacity(
+        state,
+        league,
+        state.my_draft_slot,
+    )
+
+    if optional_draft_capacity < 0:
+        raise ValueError("Draft state cannot fill every remaining required starter slot.")
+
     evaluations: list[CandidateEvaluation] = []
 
     for player in available_players:
@@ -577,6 +700,9 @@ def evaluate_candidates(
             state,
             league,
         )
+
+        if optional_draft_capacity == 0 and roster_fit == RosterFit.DEPTH:
+            continue
 
         evaluations.append(
             CandidateEvaluation(
@@ -606,12 +732,17 @@ def evaluate_candidates(
                     available_players,
                     player,
                 ),
+                position_tier_gap=_get_position_tier_gap(
+                    available_players,
+                    player,
+                ),
                 scarcity_flags=tuple(
                     get_scarcity_flags(
                         available_players,
                         player,
                     )
                 ),
+                market_pick_estimate=_get_market_pick_estimate(player),
                 adp_value_at_decision=adp_value_at_decision,
                 pre_decision_position_exposure=(
                     pre_decision_exposure[player.position].selection_chances
@@ -632,9 +763,10 @@ def build_candidate_recommendations(
 ) -> list[CandidateRecommendation]:
     """Build an explainable phase-aware deterministic shortlist.
 
-    Candidate desirability provides a cross-position guardrail using Yahoo rank
-    and roster utility. Within the plausible draft window, loss cost and return
-    risk continue to express decision urgency.
+    Candidate desirability provides a cross-position guardrail using transparent
+    Yahoo Rank/ADP market consensus plus roster utility. Within the plausible
+    draft window, loss cost, same-position tier quality, and return risk continue
+    to express decision urgency without turning manual tiers into a universal score.
 
     Args:
         evaluations: Candidate facts produced by ``evaluate_candidates``.
@@ -681,5 +813,5 @@ def build_candidate_recommendations(
 
     return sorted(
         recommendations,
-        key=_recommendation_sort_key,
+        key=cmp_to_key(_recommendation_compare),
     )[:limit]

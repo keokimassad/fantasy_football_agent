@@ -209,3 +209,40 @@ def test_main_reports_on_clock_turn_with_empty_lookahead_and_untiered_player(
 
     assert "Position exposure if I wait until my following pick:" in output
     assert "Selection chances: 0" in output
+
+
+def test_main_stops_after_final_overall_pick(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """
+    GIVEN: a ten-team fifteen-round draft has advanced beyond pick one hundred fifty
+    WHEN: the analyzer runs
+    THEN: it reports draft completion without inventing another shortlist or future user pick
+    """
+    _write_workspace(
+        tmp_path,
+        state={
+            "draft_id": "mock-complete",
+            "session_type": "mock",
+            "my_draft_slot": 8,
+            "current_overall_pick": 151,
+            "picks": [],
+        },
+        ranking_rows=[],
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ff-draft", "--workspace", str(tmp_path)],
+    )
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "Current overall pick: 151" in output
+    assert "Draft complete after #150." in output
+    assert "Deterministic shortlist:" not in output
+    assert "Decision prep shortlist" not in output
+    assert "#153" not in output
