@@ -37,6 +37,7 @@ def _evaluation(
     following_pick: int = 24,
     tier_remaining: int | None = None,
     next_tier: int | None = None,
+    position_tier_gap: int | None = 0,
     pre_decision_exposure: int = 0,
     return_exposure: int = 0,
     other_flex_eligible_starter_slots_open: int = 0,
@@ -52,7 +53,11 @@ def _evaluation(
         position_depth_need=position_depth_need,
         tier_remaining=tier_remaining,
         next_tier=next_tier,
+        position_tier_gap=position_tier_gap,
         scarcity_flags=scarcity_flags,
+        market_pick_estimate=(
+            float(player.rank) if player.adp is None else (player.rank + player.adp) / 2
+        ),
         adp_value_at_decision=(None if player.adp is None else decision_pick - player.adp),
         pre_decision_position_exposure=pre_decision_exposure,
         return_window_position_exposure=return_exposure,
@@ -60,8 +65,166 @@ def _evaluation(
     )
 
 
+def _team_eight_picks(
+    make_draft_pick: Callable[..., DraftPick],
+    positions: list[str],
+) -> list[DraftPick]:
+    """Build recorded picks for draft slot eight using its real snake-draft turns."""
+    overalls = [8, 13, 28, 33, 48, 53, 68, 73, 88, 93, 108, 113, 128, 133, 148]
+    return [
+        make_draft_pick(
+            overall=overall,
+            team_id=8,
+            position=position,
+        )
+        for overall, position in zip(overalls[: len(positions)], positions, strict=True)
+    ]
+
+
 class TestCandidateEvaluation:
     """Candidate evaluation and factual evidence."""
+
+    def test_only_required_positions_remain_when_optional_capacity_is_zero(
+        self,
+        league_config: LeagueConfig,
+        make_draft_pick: Callable[..., DraftPick],
+        make_draft_state: Callable[..., DraftState],
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: team eight reaches pick one hundred thirty-three with exactly kicker and defense open
+        WHEN: candidates are evaluated with two roster selections remaining
+        THEN: optional depth players are excluded while kicker and defense remain eligible
+        """
+        state = make_draft_state(
+            my_draft_slot=8,
+            current_overall_pick=133,
+            picks=_team_eight_picks(
+                make_draft_pick,
+                [
+                    "WR",
+                    "RB",
+                    "TE",
+                    "WR",
+                    "RB",
+                    "QB",
+                    "WR",
+                    "WR",
+                    "RB",
+                    "RB",
+                    "WR",
+                    "RB",
+                    "WR",
+                ],
+            ),
+        )
+        candidates = [
+            make_player(
+                rank=123,
+                name="Depth Wide Receiver",
+                position="WR",
+                yahoo_player_id=1,
+            ),
+            make_player(
+                rank=124,
+                name="Depth Running Back",
+                position="RB",
+                yahoo_player_id=2,
+            ),
+            make_player(
+                rank=166,
+                name="Starting Kicker",
+                position="K",
+                yahoo_player_id=3,
+            ),
+            make_player(
+                rank=151,
+                name="Starting Defense",
+                position="DEF",
+                yahoo_player_id=4,
+            ),
+        ]
+
+        evaluations = evaluate_candidates(candidates, state, league_config)
+
+        assert [evaluation.player.position for evaluation in evaluations] == ["K", "DEF"]
+
+    def test_depth_candidates_remain_eligible_while_optional_capacity_exists(
+        self,
+        league_config: LeagueConfig,
+        make_draft_pick: Callable[..., DraftPick],
+        make_draft_state: Callable[..., DraftState],
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: team eight still has one optional roster slot before reserving kicker and defense
+        WHEN: a depth wide receiver is evaluated at pick one hundred twenty-eight
+        THEN: the soft roster targets do not prevent that optional depth selection
+        """
+        state = make_draft_state(
+            my_draft_slot=8,
+            current_overall_pick=128,
+            picks=_team_eight_picks(
+                make_draft_pick,
+                [
+                    "WR",
+                    "RB",
+                    "TE",
+                    "WR",
+                    "RB",
+                    "QB",
+                    "WR",
+                    "WR",
+                    "RB",
+                    "RB",
+                    "WR",
+                    "RB",
+                ],
+            ),
+        )
+        depth_receiver = make_player(
+            rank=107,
+            name="Optional Depth Receiver",
+            position="WR",
+            yahoo_player_id=5,
+        )
+
+        evaluations = evaluate_candidates([depth_receiver], state, league_config)
+
+        assert [evaluation.player.name for evaluation in evaluations] == ["Optional Depth Receiver"]
+
+    def test_rejects_roster_that_cannot_fill_required_starters(
+        self,
+        league_config: LeagueConfig,
+        make_draft_pick: Callable[..., DraftPick],
+        make_draft_state: Callable[..., DraftState],
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: team eight has one roster spot left but several required starter positions open
+        WHEN: candidates are evaluated before its final selection
+        THEN: the impossible roster state is rejected instead of recommending another player
+        """
+        state = make_draft_state(
+            my_draft_slot=8,
+            current_overall_pick=148,
+            picks=_team_eight_picks(
+                make_draft_pick,
+                ["WR"] * 14,
+            ),
+        )
+        candidate = make_player(
+            rank=150,
+            name="Final Candidate",
+            position="WR",
+            yahoo_player_id=6,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="Draft state cannot fill every remaining required starter slot",
+        ):
+            evaluate_candidates([candidate], state, league_config)
 
     def test_decision_horizons(
         self,
@@ -1055,14 +1218,14 @@ class TestRecommendationOrdering:
             "Higher Ranked Player",
         ]
 
-    def test_rank_within_same_priority(
+    def test_market_consensus_within_same_priority(
         self,
         make_player: Callable[..., Player],
     ) -> None:
         """
-        GIVEN: two candidates with equal priority and return risk
+        GIVEN: two candidates with equal recommendation classifications
         WHEN: the shortlist is ordered
-        THEN: Yahoo rank remains the cross-position tie-breaker
+        THEN: the Rank/ADP market consensus breaks the tie deterministically
         """
         first = make_player(
             rank=10,
@@ -1374,11 +1537,553 @@ class TestRecommendationGuardrails:
         assert recommendations[0].desirability == CandidateDesirability.HIGH
 
         assert recommendations[1].evaluation.player.name == "Later Tier Cliff"
-        assert recommendations[1].desirability == CandidateDesirability.LOW
+        assert recommendations[1].desirability == CandidateDesirability.MEDIUM
+
+    def test_high_desirability_beats_medium_singleton_scarcity(
+        self,
+        league_config: LeagueConfig,
+        make_draft_pick: Callable[..., DraftPick],
+        make_draft_state: Callable[..., DraftState],
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: pick thirteen has elite high-value receivers plus a scarce later-ranked quarterback
+        WHEN: the on-clock shortlist is ordered
+        THEN: high-desirability value stays ahead of medium-desirability singleton scarcity
+        """
+        state = make_draft_state(
+            my_draft_slot=8,
+            current_overall_pick=13,
+            picks=[
+                make_draft_pick(
+                    overall=8,
+                    team_id=8,
+                    position="WR",
+                    player="Amon-Ra St. Brown",
+                )
+            ],
+        )
+        candidates = [
+            make_player(
+                rank=11,
+                adp=10.5,
+                name="Elite Receiver One",
+                position="WR",
+                manual_tier=2,
+                yahoo_player_id=11,
+            ),
+            make_player(
+                rank=13,
+                adp=12.9,
+                name="Elite Receiver Two",
+                position="WR",
+                manual_tier=2,
+                yahoo_player_id=13,
+            ),
+            make_player(
+                rank=28,
+                adp=19.8,
+                name="Scarce Quarterback",
+                position="QB",
+                manual_tier=1,
+                yahoo_player_id=28,
+            ),
+            make_player(
+                rank=61,
+                adp=47.0,
+                name="Next Quarterback Tier",
+                position="QB",
+                manual_tier=2,
+                yahoo_player_id=61,
+            ),
+        ]
+
+        recommendations = build_candidate_recommendations(
+            evaluate_candidates(candidates, state, league_config),
+            limit=4,
+        )
+
+        top_names = [
+            recommendation.evaluation.player.name for recommendation in recommendations[:2]
+        ]
+        assert top_names == ["Elite Receiver One", "Elite Receiver Two"]
+        assert recommendations[0].desirability == CandidateDesirability.HIGH
+        assert recommendations[1].desirability == CandidateDesirability.HIGH
+        scarce = next(
+            recommendation
+            for recommendation in recommendations
+            if recommendation.evaluation.player.name == "Scarce Quarterback"
+        )
+        assert scarce.desirability == CandidateDesirability.MEDIUM
+        assert "LAST_IN_TIER" in scarce.signals
 
 
 class TestMockDraftRegressions:
     """Regression tests from observed 2026 Yahoo mock-draft decisions."""
+
+    def test_pick_32_tier_and_adp_can_beat_small_rank_edge(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: Zay Flowers has the better Yahoo rank but Rashee Rice has better ADP and tier
+        WHEN: both receivers are plausible direct starters at pick thirty-two
+        THEN: Rice's same-position tier cliff can beat Flowers' small raw-rank edge
+        """
+        flowers = make_player(
+            rank=32,
+            name="Zay Flowers",
+            position="WR",
+            adp=36.2,
+            manual_tier=4,
+            yahoo_player_id=10032,
+        )
+        rice = make_player(
+            rank=36,
+            name="Rashee Rice",
+            position="WR",
+            adp=34.6,
+            manual_tier=3,
+            yahoo_player_id=10036,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    flowers,
+                    decision_pick=32,
+                    following_pick=49,
+                    tier_remaining=5,
+                    next_tier=5,
+                    position_tier_gap=1,
+                    return_exposure=16,
+                ),
+                _evaluation(
+                    rice,
+                    decision_pick=32,
+                    following_pick=49,
+                    tier_remaining=1,
+                    next_tier=4,
+                    position_tier_gap=0,
+                    scarcity_flags=("LAST_IN_TIER",),
+                    return_exposure=16,
+                ),
+            ]
+        )
+
+        assert recommendations[0].evaluation.player.name == "Rashee Rice"
+        assert recommendations[0].desirability == CandidateDesirability.MEDIUM
+        assert recommendations[0].loss_cost == LossCost.HIGH
+        assert recommendations[1].evaluation.player.name == "Zay Flowers"
+        assert recommendations[1].desirability == CandidateDesirability.MEDIUM
+
+    def test_pick_49_waiting_shortlist_includes_open_tight_end(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: several receivers and Tyler Warren are plausible targets before pick forty-nine
+        WHEN: the waiting shortlist is limited to five candidates
+        THEN: Rank/ADP consensus keeps the open-starter tight end in the decision set
+        """
+        players = [
+            make_player(
+                rank=37,
+                name="Tetairoa McMillan",
+                position="WR",
+                adp=41.7,
+                manual_tier=5,
+                yahoo_player_id=10037,
+            ),
+            make_player(
+                rank=39,
+                name="Garrett Wilson",
+                position="WR",
+                adp=49.4,
+                manual_tier=4,
+                yahoo_player_id=10039,
+            ),
+            make_player(
+                rank=40,
+                name="Ladd McConkey",
+                position="WR",
+                adp=45.3,
+                manual_tier=4,
+                yahoo_player_id=10040,
+            ),
+            make_player(
+                rank=42,
+                name="Emeka Egbuka",
+                position="WR",
+                adp=44.0,
+                manual_tier=4,
+                yahoo_player_id=10042,
+            ),
+            make_player(
+                rank=45,
+                name="Luther Burden III",
+                position="WR",
+                adp=58.8,
+                manual_tier=5,
+                yahoo_player_id=10045,
+            ),
+            make_player(
+                rank=47,
+                name="Tyler Warren",
+                position="TE",
+                adp=47.2,
+                manual_tier=3,
+                yahoo_player_id=10047,
+            ),
+        ]
+        evaluations = [
+            _evaluation(
+                player,
+                decision_pick=49,
+                following_pick=52,
+                is_on_clock=False,
+                pre_decision_exposure=8,
+            )
+            for player in players
+        ]
+
+        recommendations = build_candidate_recommendations(evaluations, limit=5)
+        names = [recommendation.evaluation.player.name for recommendation in recommendations]
+
+        assert "Tyler Warren" in names
+        assert "Luther Burden III" not in names
+
+    def test_pick_109_market_consensus_beats_small_rank_edge(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: Quentin Johnston has a slightly better rank but Alec Pierce has much earlier ADP
+        WHEN: otherwise comparable depth receivers are ordered at pick one hundred nine
+        THEN: the Rank/ADP consensus prefers Pierce instead of raw Yahoo rank alone
+        """
+        johnston = make_player(
+            rank=95,
+            name="Quentin Johnston",
+            position="WR",
+            adp=109.9,
+            manual_tier=8,
+            yahoo_player_id=10095,
+        )
+        pierce = make_player(
+            rank=97,
+            name="Alec Pierce",
+            position="WR",
+            adp=92.7,
+            manual_tier=8,
+            yahoo_player_id=10097,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    johnston,
+                    decision_pick=109,
+                    following_pick=112,
+                    roster_fit=RosterFit.DEPTH,
+                    position_depth_need=PositionDepthNeed.LOW,
+                    tier_remaining=5,
+                    next_tier=9,
+                    return_exposure=2,
+                ),
+                _evaluation(
+                    pierce,
+                    decision_pick=109,
+                    following_pick=112,
+                    roster_fit=RosterFit.DEPTH,
+                    position_depth_need=PositionDepthNeed.LOW,
+                    tier_remaining=5,
+                    next_tier=9,
+                    return_exposure=2,
+                ),
+            ]
+        )
+
+        assert recommendations[0].evaluation.player.name == "Alec Pierce"
+        assert recommendations[1].evaluation.player.name == "Quentin Johnston"
+
+    def test_pick_132_worse_tier_singleton_does_not_beat_best_available_tier(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: a Tier-5 defense is last in tier while Tier-1 defenses remain available
+        WHEN: defenses are ordered at pick one hundred thirty-two
+        THEN: worse-tier scarcity cannot promote the Tier-5 defense above Tier 1
+        """
+        falcons = make_player(
+            rank=262,
+            name="Falcons",
+            position="DEF",
+            adp=132.1,
+            manual_tier=5,
+            yahoo_player_id=10262,
+        )
+        broncos = make_player(
+            rank=165,
+            name="Broncos",
+            position="DEF",
+            adp=101.1,
+            manual_tier=1,
+            yahoo_player_id=10165,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    falcons,
+                    decision_pick=132,
+                    following_pick=149,
+                    tier_remaining=1,
+                    next_tier=6,
+                    position_tier_gap=4,
+                    scarcity_flags=("LAST_IN_TIER",),
+                    return_exposure=12,
+                ),
+                _evaluation(
+                    broncos,
+                    decision_pick=132,
+                    following_pick=149,
+                    tier_remaining=2,
+                    next_tier=2,
+                    position_tier_gap=0,
+                    scarcity_flags=("LOW_TIER_DEPTH",),
+                    return_exposure=12,
+                ),
+            ]
+        )
+
+        assert recommendations[0].evaluation.player.name == "Broncos"
+        assert recommendations[1].evaluation.player.name == "Falcons"
+        assert recommendations[1].loss_cost == LossCost.MEDIUM
+
+    def test_pick_149_best_available_kicker_tier_breaks_close_market_tie(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: Evan McPherson is in the best available kicker tier while Cairo Santos trails it
+        WHEN: otherwise comparable kickers are ordered at pick one hundred forty-nine
+        THEN: the position-relative tier gap breaks the close market tie in McPherson's favor
+        """
+        santos = make_player(
+            rank=218,
+            name="Cairo Santos",
+            position="K",
+            adp=144.6,
+            manual_tier=4,
+            yahoo_player_id=10218,
+        )
+        mcpherson = make_player(
+            rank=221,
+            name="Evan McPherson",
+            position="K",
+            adp=142.6,
+            manual_tier=2,
+            yahoo_player_id=10221,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    santos,
+                    decision_pick=149,
+                    following_pick=152,
+                    position_tier_gap=2,
+                    scarcity_flags=("LOW_TIER_DEPTH",),
+                    tier_remaining=2,
+                    next_tier=5,
+                ),
+                _evaluation(
+                    mcpherson,
+                    decision_pick=149,
+                    following_pick=152,
+                    position_tier_gap=0,
+                    tier_remaining=3,
+                    next_tier=3,
+                ),
+            ]
+        )
+
+        assert recommendations[0].evaluation.player.name == "Evan McPherson"
+        assert recommendations[1].evaluation.player.name == "Cairo Santos"
+
+    def test_pick_12_waiting_prefers_better_same_position_tier(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: Kenneth Walker and Chase Brown share ADP but Brown is the final available Tier-2 RB
+        WHEN: the user is waiting for pick twenty
+        THEN: same-position tier quality places Brown ahead of Walker's small Yahoo-rank edge
+        """
+        walker = make_player(
+            rank=12,
+            name="Kenneth Walker III",
+            position="RB",
+            adp=16.3,
+            manual_tier=3,
+            yahoo_player_id=20012,
+        )
+        brown = make_player(
+            rank=14,
+            name="Chase Brown",
+            position="RB",
+            adp=16.3,
+            manual_tier=2,
+            yahoo_player_id=20014,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    walker,
+                    decision_pick=20,
+                    following_pick=21,
+                    is_on_clock=False,
+                    position_tier_gap=1,
+                    tier_remaining=5,
+                    next_tier=4,
+                    pre_decision_exposure=8,
+                ),
+                _evaluation(
+                    brown,
+                    decision_pick=20,
+                    following_pick=21,
+                    is_on_clock=False,
+                    position_tier_gap=0,
+                    tier_remaining=1,
+                    next_tier=3,
+                    scarcity_flags=("LAST_IN_TIER",),
+                    pre_decision_exposure=8,
+                ),
+            ]
+        )
+
+        assert [r.evaluation.player.name for r in recommendations] == [
+            "Chase Brown",
+            "Kenneth Walker III",
+        ]
+
+    def test_pick_40_waiting_prefers_rice_over_flowers(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: Rice has better ADP and a better WR tier while Flowers has the better Yahoo rank
+        WHEN: the user is preparing for pick forty
+        THEN: same-position tier quality keeps Rice ahead inside the same decision band
+        """
+        flowers = make_player(
+            rank=32,
+            name="Zay Flowers",
+            position="WR",
+            adp=36.2,
+            manual_tier=4,
+            yahoo_player_id=20032,
+        )
+        rice = make_player(
+            rank=36,
+            name="Rashee Rice",
+            position="WR",
+            adp=34.6,
+            manual_tier=3,
+            yahoo_player_id=20036,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    flowers,
+                    decision_pick=40,
+                    following_pick=41,
+                    is_on_clock=False,
+                    position_tier_gap=1,
+                    tier_remaining=4,
+                    next_tier=5,
+                    pre_decision_exposure=4,
+                ),
+                _evaluation(
+                    rice,
+                    decision_pick=40,
+                    following_pick=41,
+                    is_on_clock=False,
+                    position_tier_gap=0,
+                    tier_remaining=1,
+                    next_tier=4,
+                    scarcity_flags=("LAST_IN_TIER",),
+                    pre_decision_exposure=4,
+                ),
+            ]
+        )
+
+        assert [r.evaluation.player.name for r in recommendations] == [
+            "Rashee Rice",
+            "Zay Flowers",
+        ]
+
+    def test_pick_41_direct_starter_utility_beats_flex_scarcity(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: a scarce FLEX running back competes with a direct-starting wide receiver
+        WHEN: both are otherwise plausible on-clock candidates at pick forty-one
+        THEN: high direct-starter utility beats low FLEX utility before scarcity breaks the tie
+        """
+        love = make_player(
+            rank=34,
+            name="Jeremiyah Love",
+            position="RB",
+            adp=28.5,
+            manual_tier=4,
+            yahoo_player_id=20034,
+        )
+        mcconkey = make_player(
+            rank=40,
+            name="Ladd McConkey",
+            position="WR",
+            adp=45.3,
+            manual_tier=4,
+            yahoo_player_id=20040,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    love,
+                    decision_pick=41,
+                    following_pick=60,
+                    roster_fit=RosterFit.FLEX,
+                    other_flex_eligible_starter_slots_open=2,
+                    tier_remaining=1,
+                    next_tier=5,
+                    position_tier_gap=0,
+                    scarcity_flags=("LAST_IN_TIER",),
+                    return_exposure=18,
+                ),
+                _evaluation(
+                    mcconkey,
+                    decision_pick=41,
+                    following_pick=60,
+                    roster_fit=RosterFit.DIRECT_STARTER,
+                    tier_remaining=3,
+                    next_tier=5,
+                    position_tier_gap=0,
+                    return_exposure=18,
+                ),
+            ]
+        )
+
+        assert recommendations[0].evaluation.player.name == "Ladd McConkey"
+        assert recommendations[0].roster_utility == RosterUtility.HIGH
+        assert recommendations[1].evaluation.player.name == "Jeremiyah Love"
+        assert recommendations[1].roster_utility == RosterUtility.LOW
 
     def test_pick_75_rb_depth_over_wr4(
         self,

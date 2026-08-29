@@ -25,6 +25,8 @@ from fantasy_football_agent.draft.state import (
     get_all_team_position_counts,
     get_team_context_for_picks,
     get_team_roster,
+    get_total_draft_picks,
+    is_draft_complete,
     load_draft_state,
     load_league_config,
     team_for_overall_pick,
@@ -120,6 +122,33 @@ def main() -> None:
 
     validate_draft_state(state, league)
 
+    print()
+    print("=== Fantasy Draft Assistant ===")
+    print(f"League: {league.league_name}")
+    print(f"Teams: {league.teams}")
+    print(f"Draft: {state.draft_id} ({state.session_type})")
+    print(f"My draft slot: {state.my_draft_slot}")
+    print(f"Current overall pick: {state.current_overall_pick}")
+
+    if is_draft_complete(state, league):
+        print(f"Draft complete after #{get_total_draft_picks(league)}.")
+
+        my_roster = get_team_roster(
+            state,
+            state.my_draft_slot,
+        )
+
+        print()
+        print("My roster:")
+
+        if not my_roster:
+            print("  No players drafted.")
+        else:
+            for pick in my_roster:
+                print(f"  {pick.position}: {pick.player} (Pick {pick.overall})")
+
+        return
+
     rankings = load_rankings(paths.rankings)
 
     available = get_available_players(
@@ -137,14 +166,6 @@ def main() -> None:
         candidate_evaluations,
         limit=5,
     )
-
-    print()
-    print("=== Fantasy Draft Assistant ===")
-    print(f"League: {league.league_name}")
-    print(f"Teams: {league.teams}")
-    print(f"Draft: {state.draft_id} ({state.session_type})")
-    print(f"My draft slot: {state.my_draft_slot}")
-    print(f"Current overall pick: {state.current_overall_pick}")
 
     drafting_team = team_for_overall_pick(
         state.current_overall_pick,
@@ -312,16 +333,22 @@ def main() -> None:
     if is_on_clock:
         print(f"  I am currently on the clock at #{state.current_overall_pick}.")
 
-        print(f"  My following pick: #{target_pick}")
-
-        print(f"  Opponent selections if I wait: {len(active_picks)}")
+        if target_pick is None:
+            print("  This is my final draft selection.")
+            print(f"  Opponent selections remaining afterward: {len(active_picks)}")
+        else:
+            print(f"  My following pick: #{target_pick}")
+            print(f"  Opponent selections if I wait: {len(active_picks)}")
 
     else:
         print(f"  Current pick: #{state.current_overall_pick}")
 
-        print(f"  My next pick: #{target_pick}")
-
-        print(f"  Selections before my pick: {len(active_picks)}")
+        if target_pick is None:
+            print("  My draft selections are complete.")
+            print(f"  Selections remaining in the league draft: {len(active_picks)}")
+        else:
+            print(f"  My next pick: #{target_pick}")
+            print(f"  Selections before my pick: {len(active_picks)}")
 
     if active_picks:
         pick_sequence = " -> ".join(

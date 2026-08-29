@@ -51,7 +51,7 @@ Future AI functionality will consume those results rather than recreate them.
 - Build draft lookahead windows between the current pick and future user picks.
 - Estimate opponent position exposure inside those windows.
 - Evaluate candidates deterministically.
-- Produce a compact top-five recommendation shortlist.
+- Produce a compact top-five deterministic decision-support shortlist for the user or AI.
 - Distinguish:
   - cross-position candidate desirability;
   - roster fit;
@@ -119,9 +119,10 @@ and timing as separate concepts.
 Describes whether a player is a plausible cross-position selection in the current draft
 window.
 
-Yahoo rank is the deterministic cross-position guardrail. Manual tier scarcity may change
-how urgent a player is, but a substantially later-ranked player should not leap the board
-solely because that player is last in a position-relative tier.
+Yahoo rank and ADP jointly define the deterministic cross-position market window. When
+both are available, the engine uses their midpoint as a transparent market-consensus
+estimate so neither source owns the desirability boundary by itself. A substantially later
+market candidate still cannot leap the board solely because that player is scarce.
 
 ### Roster Fit
 
@@ -152,8 +153,8 @@ prevent or prohibit another player at that position. Instead, the target provide
 roster-construction context when otherwise-plausible candidates have comparable market value.
 
 Needed bench depth can raise immediate roster utility from `LOW` to `MEDIUM`, but it does not
-become `HIGH` solely because a position is below target. Yahoo rank/desirability remains the
-cross-position guardrail.
+become `HIGH` solely because a position is below target. Market-consensus desirability remains
+the cross-position guardrail.
 
 ### Availability Risk
 
@@ -163,7 +164,9 @@ It estimates whether a candidate is likely to survive until the user's decision 
 Yahoo rank and ADP as independent market signals.
 
 Waiting-mode output is preparation rather than a claim that the player is currently
-selectable. Signals therefore use language such as:
+selectable. Within the same position and decision band, better manual-tier quality can break
+a close market-ordering tie; manual tiers are not compared across positions. Signals therefore
+use language such as:
 
 - `VALUE_IF_AVAILABLE_AT_DECISION`
 - `PRE_DECISION_POSITION_PRESSURE`
@@ -175,7 +178,10 @@ The engine does not emit `FALLEN_PAST_ADP` before the user is actually on the cl
 Used when the user is **on the clock**.
 
 It estimates whether a player is likely to disappear before the user's following pick.
-Yahoo rank and ADP provide independent market-timing evidence.
+Yahoo rank and ADP provide independent market-timing evidence. On-clock ordering gives
+immediate roster utility precedence over scarcity when otherwise-plausible candidates compete,
+so a high-utility direct starter is not displaced by a low-utility FLEX option solely because
+the FLEX option is scarce.
 
 Raw opponent position exposure remains visible as deterministic context, but generic
 exposure is **not treated as selection probability**. An opponent having an open QB slot is
@@ -190,10 +196,13 @@ Inputs include:
 - roster fit;
 - `LAST_IN_TIER`;
 - known next-tier information;
-- large tier drops.
+- large tier drops;
+- whether the candidate is still in the best currently available manual tier at that
+  position.
 
-Loss cost describes replacement pain. It does not independently redefine cross-position
-player value.
+A last player in a worse tier does not become a high-loss candidate while clearly better
+tiers remain available at the same position. Loss cost describes replacement pain; it does
+not independently redefine cross-position player value.
 
 ### Decision Urgency
 
@@ -206,10 +215,19 @@ same as overall player desirability.
 Manual tiers remain **position-relative**.
 
 A Tier 1 RB is not assumed to have the same universal value as a Tier 1 WR. The engine does
-not convert tiers into an arbitrary cross-position numerical score.
+not convert tiers into an arbitrary cross-position numerical score. Instead, it tracks how
+far a candidate's tier trails the best currently available tier **at that same position**.
+That position-relative gap can break close recommendation ties and prevents singleton
+scarcity in a worse tier from masquerading as premium value.
 
-Yahoo rank remains the deterministic cross-position baseline/guardrail, while ADP provides
-additional market-timing evidence.
+Yahoo rank and ADP jointly provide the cross-position market baseline.
+
+### Draft Boundary
+
+Lookahead is bounded by the configured final overall pick. Once a manager has no remaining
+selection inside that boundary, the engine reports that explicitly instead of inventing the
+next mathematical snake turn. This keeps late-round exposure and recommendation horizons
+inside the actual draft.
 
 ## Project Structure
 
@@ -588,16 +606,18 @@ with the provider's terms.
 
 ## Roadmap
 
-The deterministic recommendation layer is now phase-aware and position-depth-aware, and is
-ready for additional mock validation.
+The deterministic recommendation layer is now phase-aware, position-depth-aware, and uses
+Rank/ADP market consensus plus position-relative tier quality. The rendered top five are a
+compact decision set rather than an autonomous final-pick decision.
 
 Next priorities:
 
 1. run more live Yahoo mock drafts and collect recommendation regressions;
 2. refine the live-draft decision workflow based on clock pressure and readability;
 3. add timestamped recent-news and injury context as a separate input layer;
-4. add one AI recommendation agent over structured deterministic results;
-5. run AI-assisted mocks and harden deterministic fallback behavior;
+4. add one AI recommendation agent over a broader structured candidate packet rather than
+   only the rendered top five;
+5. run AI-assisted mocks and harden the deterministic top-five fallback behavior;
 6. evaluate richer Yahoo API ingestion when available;
 7. consider specialized multi-agent roles only if they add measurable value.
 

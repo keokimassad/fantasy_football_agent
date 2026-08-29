@@ -202,17 +202,70 @@ def get_all_team_open_starter_slots(
     }
 
 
+def get_draftable_roster_size(league: LeagueConfig) -> int:
+    """Return the number of roster spots filled during the draft.
+
+    IR is post-draft roster capacity rather than a draftable slot in the supported
+    Yahoo league format. BENCH and FLEX remain draftable because selections occupy
+    those roster spots during the draft.
+    """
+    return sum(count for position, count in league.roster.items() if position != "IR")
+
+
+def get_total_draft_picks(league: LeagueConfig) -> int:
+    """Return the final overall pick number for the configured draft."""
+    return league.teams * get_draftable_roster_size(league)
+
+
+def is_draft_complete(
+    state: DraftState,
+    league: LeagueConfig,
+) -> bool:
+    """Return whether the draft has advanced beyond its final configured pick."""
+    return state.current_overall_pick > get_total_draft_picks(league)
+
+
+def get_team_optional_draft_capacity(
+    state: DraftState,
+    league: LeagueConfig,
+    team_id: int,
+) -> int:
+    """Return how many remaining selections may be spent on optional depth.
+
+    Remaining roster capacity includes every draftable roster spot. Open starter
+    slots are the selections the team must still reserve to produce a legal roster.
+    Their difference is therefore the number of picks that can safely be spent on
+    players who do not fill an open required slot.
+    """
+    remaining_roster_slots = max(
+        get_draftable_roster_size(league) - len(get_team_roster(state, team_id)),
+        0,
+    )
+    required_open_slots = sum(
+        get_team_open_starter_slots(
+            state,
+            league,
+            team_id,
+        ).values()
+    )
+
+    return remaining_roster_slots - required_open_slots
+
+
 def get_next_pick_for_team(
     current_overall_pick: int,
     team_id: int,
     teams: int,
     include_current: bool = False,
-) -> int:
+    max_overall_pick: int | None = None,
+) -> int | None:
     """Find the next overall pick owned by a team.
 
     ``include_current`` controls the on-the-clock case. When it is true, the current
     pick may be returned if it belongs to the requested team. When it is false, the
-    search begins with the following overall pick.
+    search begins with the following overall pick. ``max_overall_pick`` optionally
+    bounds the search to a configured draft endpoint; ``None`` is returned when the
+    team has no remaining selection inside that boundary.
 
     Raises:
         ValueError: If ``team_id`` falls outside the league's draft slots.
@@ -222,17 +275,19 @@ def get_next_pick_for_team(
 
     candidate = current_overall_pick if include_current else current_overall_pick + 1
 
-    while True:
+    while max_overall_pick is None or candidate <= max_overall_pick:
         if team_for_overall_pick(candidate, teams) == team_id:
             return candidate
 
         candidate += 1
 
+    return None
+
 
 def get_active_lookahead_window(
     state: DraftState,
     league: LeagueConfig,
-) -> tuple[int, int, list[tuple[int, int]]]:
+) -> tuple[int, int | None, list[tuple[int, int]]]:
     """Build the lookahead window that matters for the user's next decision point.
 
     While another team is drafting, the window includes every selection from the
@@ -247,13 +302,23 @@ def get_active_lookahead_window(
         selections.
     """
     current_pick = state.current_overall_pick
+    final_pick = get_total_draft_picks(league)
 
     next_my_pick = get_next_pick_for_team(
         current_overall_pick=current_pick,
         team_id=state.my_draft_slot,
         teams=league.teams,
         include_current=True,
+        max_overall_pick=final_pick,
     )
+
+    # The user's selections are complete while the league draft is still finishing.
+    if next_my_pick is None:
+        picks = [
+            (overall_pick, team_for_overall_pick(overall_pick, league.teams))
+            for overall_pick in range(current_pick, final_pick + 1)
+        ]
+        return current_pick, None, picks
 
     # We are currently on the clock.
     if next_my_pick == current_pick:
@@ -262,48 +327,24 @@ def get_active_lookahead_window(
             team_id=state.my_draft_slot,
             teams=league.teams,
             include_current=False,
+            max_overall_pick=final_pick,
         )
 
+        window_stop = following_my_pick if following_my_pick is not None else final_pick + 1
         picks = [
-            (
-                overall_pick,
-                team_for_overall_pick(
-                    overall_pick,
-                    league.teams,
-                ),
-            )
-            for overall_pick in range(
-                current_pick + 1,
-                following_my_pick,
-            )
+            (overall_pick, team_for_overall_pick(overall_pick, league.teams))
+            for overall_pick in range(current_pick + 1, window_stop)
         ]
 
-        return (
-            current_pick + 1,
-            following_my_pick,
-            picks,
-        )
+        return current_pick + 1, following_my_pick, picks
 
     # We are waiting for our turn.
     picks = [
-        (
-            overall_pick,
-            team_for_overall_pick(
-                overall_pick,
-                league.teams,
-            ),
-        )
-        for overall_pick in range(
-            current_pick,
-            next_my_pick,
-        )
+        (overall_pick, team_for_overall_pick(overall_pick, league.teams))
+        for overall_pick in range(current_pick, next_my_pick)
     ]
 
-    return (
-        current_pick,
-        next_my_pick,
-        picks,
-    )
+    return current_pick, next_my_pick, picks
 
 
 def get_team_context_for_picks(

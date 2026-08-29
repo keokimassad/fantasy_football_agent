@@ -11,11 +11,15 @@ from fantasy_football_agent.draft.state import (
     get_active_lookahead_window,
     get_all_team_open_starter_slots,
     get_all_team_position_counts,
+    get_draftable_roster_size,
     get_next_pick_for_team,
     get_team_context_for_picks,
     get_team_open_starter_slots,
+    get_team_optional_draft_capacity,
     get_team_position_counts,
     get_team_roster,
+    get_total_draft_picks,
+    is_draft_complete,
     load_draft_state,
     load_league_config,
     team_for_overall_pick,
@@ -329,6 +333,79 @@ class TestRosterAccounting:
         assert counts[10] == {}
 
 
+class TestDraftCapacity:
+    """Draftable roster size and optional-selection capacity."""
+
+    def test_draftable_roster_size_excludes_ir(
+        self,
+        league_config: LeagueConfig,
+    ) -> None:
+        """
+        GIVEN: the league has fifteen normal draft slots and two IR slots
+        WHEN: draft capacity is calculated
+        THEN: IR is excluded and the ten-team draft ends at overall pick one hundred fifty
+        """
+        assert get_draftable_roster_size(league_config) == 15
+        assert get_total_draft_picks(league_config) == 150
+
+    def test_draft_complete_only_after_final_pick(
+        self,
+        league_config: LeagueConfig,
+        make_draft_state: Callable[..., DraftState],
+    ) -> None:
+        """
+        GIVEN: a ten-team draft whose final configured selection is overall pick one hundred fifty
+        WHEN: completion is checked at the final pick and immediately after it
+        THEN: the final pick is still active and pick one hundred fifty-one is complete
+        """
+        final_pick = make_draft_state(current_overall_pick=150)
+        after_final_pick = make_draft_state(current_overall_pick=151)
+
+        assert is_draft_complete(final_pick, league_config) is False
+        assert is_draft_complete(after_final_pick, league_config) is True
+
+    def test_one_optional_pick_remains_before_final_required_slots(
+        self,
+        league_config: LeagueConfig,
+        make_draft_pick: Callable[..., DraftPick],
+        make_draft_state: Callable[..., DraftState],
+    ) -> None:
+        """
+        GIVEN: team eight has twelve players with only kicker and defense starters open
+        WHEN: remaining optional draft capacity is calculated before pick one hundred twenty-eight
+        THEN: one more depth selection is still feasible before kicker and defense become mandatory
+        """
+        overalls = [8, 13, 28, 33, 48, 53, 68, 73, 88, 93, 108, 113]
+        positions = [
+            "WR",
+            "RB",
+            "TE",
+            "WR",
+            "RB",
+            "QB",
+            "WR",
+            "WR",
+            "RB",
+            "RB",
+            "WR",
+            "RB",
+        ]
+        state = make_draft_state(
+            my_draft_slot=8,
+            current_overall_pick=128,
+            picks=[
+                make_draft_pick(
+                    overall=overall,
+                    team_id=8,
+                    position=position,
+                )
+                for overall, position in zip(overalls, positions, strict=True)
+            ],
+        )
+
+        assert get_team_optional_draft_capacity(state, league_config, 8) == 1
+
+
 class TestOpenStarterSlots:
     """Starter and FLEX slot accounting."""
 
@@ -513,6 +590,14 @@ class TestNextPickLookup:
         """
         assert get_next_pick_for_team(10, team_id=10, teams=10, include_current=False) == 11
 
+    def test_can_bound_search_at_draft_endpoint(self) -> None:
+        """
+        GIVEN: team one has completed its fifteenth selection in a 150-pick draft
+        WHEN: its next snake turn is searched within the configured draft boundary
+        THEN: no fictional pick one hundred sixty is returned
+        """
+        assert get_next_pick_for_team(142, team_id=1, teams=10, max_overall_pick=150) is None
+
     @pytest.mark.parametrize("team_id", [0, 11])
     def test_rejects_team_outside_league(self, team_id: int) -> None:
         """
@@ -570,6 +655,42 @@ class TestActiveLookaheadWindow:
         assert target_pick == 24
         assert [overall for overall, _ in picks] == list(range(18, 24))
         assert [team_id for _, team_id in picks] == [3, 2, 1, 1, 2, 3]
+
+    def test_waiting_after_final_user_pick_stops_at_draft_endpoint(
+        self,
+        league_config: LeagueConfig,
+        make_draft_state: Callable[..., DraftState],
+    ) -> None:
+        """
+        GIVEN: draft slot one has made its final selection and pick one hundred forty-two is active
+        WHEN: the remaining lookahead window is calculated
+        THEN: no future user pick is invented and only picks through one hundred fifty remain
+        """
+        state = make_draft_state(my_draft_slot=1, current_overall_pick=142)
+
+        window_start, target_pick, picks = get_active_lookahead_window(state, league_config)
+
+        assert window_start == 142
+        assert target_pick is None
+        assert [overall for overall, _ in picks] == list(range(142, 151))
+
+    def test_final_user_pick_has_no_following_pick(
+        self,
+        league_config: LeagueConfig,
+        make_draft_state: Callable[..., DraftState],
+    ) -> None:
+        """
+        GIVEN: draft slot one is on the clock for its final selection at pick one hundred forty-one
+        WHEN: the active lookahead window is calculated
+        THEN: the remaining opponent picks stop at one hundred fifty without a fictional next turn
+        """
+        state = make_draft_state(my_draft_slot=1, current_overall_pick=141)
+
+        window_start, target_pick, picks = get_active_lookahead_window(state, league_config)
+
+        assert window_start == 142
+        assert target_pick is None
+        assert [overall for overall, _ in picks] == list(range(142, 151))
 
     def test_consecutive_turn_has_empty_window(
         self,
