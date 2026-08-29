@@ -801,8 +801,137 @@ GET /openapi.json       -> generated Action schema
 domain. The gateway API key comes from `FANTASY_AGENT_GATEWAY_API_KEY` and must never be
 committed.
 
+### Gateway Secret Lifecycle on macOS
+
+Use the macOS login Keychain for the local development bearer secret. Do not store the value in
+`.env`, `.zshrc`, project configuration, Git, or the clipboard as part of the normal workflow.
+
+One-time setup or rotation:
+
+```bash
+export FANTASY_AGENT_GATEWAY_API_KEY="$(
+  python -c 'import secrets; print(secrets.token_urlsafe(32))'
+)"
+security add-generic-password \
+  -a "$USER" \
+  -s "fantasy_football_agent_gateway" \
+  -w "$FANTASY_AGENT_GATEWAY_API_KEY" \
+  -U
+unset FANTASY_AGENT_GATEWAY_API_KEY
+```
+
+The Keychain entry survives logout and reboot. Environment variables are process-local and do
+not survive a terminal close or reboot. Each shell that starts the gateway or sends authenticated
+requests must load the value itself:
+
+```bash
+export FANTASY_AGENT_GATEWAY_API_KEY="$(
+  security find-generic-password \
+    -a "$USER" \
+    -s "fantasy_football_agent_gateway" \
+    -w
+)"
+```
+
+Verify presence without printing the secret:
+
+```bash
+echo "${#FANTASY_AGENT_GATEWAY_API_KEY}"
+```
+
+A token generated with `secrets.token_urlsafe(32)` is normally 43 characters. Never print the
+actual value into logs, screenshots, issue comments, PRs, or chat transcripts.
+
+Smoke-test the local boundary before public exposure:
+
+```bash
+# Terminal 1
+ff-gateway --workspace .
+
+# Terminal 2, after loading the Keychain secret independently
+curl http://127.0.0.1:8000/health
+curl \
+  -H "Authorization: Bearer $FANTASY_AGENT_GATEWAY_API_KEY" \
+  http://127.0.0.1:8000/v1/draft/decision
+curl http://127.0.0.1:8000/openapi.json \
+  -o /tmp/fantasy-agent-openapi.json
+```
+
+Expected security behavior:
+
+- `/health` succeeds without credentials and exposes no draft data;
+- `/v1/draft/decision` returns `401` without the bearer secret;
+- the same route returns `200` with the correct bearer secret;
+- `/openapi.json` advertises only read operations and bearer authentication;
+- a completed draft returns `phase=COMPLETE` and an empty candidate list rather than inventing a
+  future pick.
+
+After a shell no longer needs the secret, run `unset FANTASY_AGENT_GATEWAY_API_KEY`. To remove the
+persistent development secret entirely:
+
+```bash
+security delete-generic-password \
+  -a "$USER" \
+  -s "fantasy_football_agent_gateway"
+```
+
 Keep HTTP tests split from deterministic packet tests. The gateway should prove authentication,
 OpenAPI shape, and serialization, while draft behavior remains covered in `tests/unit/draft`.
+
+### ngrok + Custom GPT Action Development Workflow
+
+The development tunnel is intentionally outside the deterministic engine. A normal live test uses
+three independent shells:
+
+```text
+Terminal 1: ff-gateway --workspace . --public-url <ngrok HTTPS URL>
+Terminal 2: ngrok http 8000
+Terminal 3: curl / smoke-test commands as needed
+```
+
+The ngrok account token should also live in macOS Keychain under
+`fantasy_football_agent_ngrok`. Load it into `NGROK_AUTHTOKEN` only in the shell that starts the
+tunnel. Do not copy either secret into documentation, screenshots, issue comments, PR text, or
+chat transcripts.
+
+Before configuring or reconfiguring the Action, verify the public route itself:
+
+```text
+GET /health                     -> 200 without credentials
+GET /v1/draft/decision          -> 401 without bearer credentials
+GET /v1/draft/decision          -> 200 with the gateway bearer secret
+GET /openapi.json               -> public schema with ngrok HTTPS server
+```
+
+The private Custom GPT Action uses the generated OpenAPI schema and the same gateway bearer
+secret. The GPT's exact behavioral prompt belongs in `CUSTOM_GPT_INSTRUCTIONS.md`; keep that file
+provider-facing and keep deterministic recommendation math out of it.
+
+Validated behavior from the first end-to-end mock cycle:
+
+```text
+COMPLETE
+  completed 150-pick mock -> no decision pick, no following pick, zero candidates
+
+WAITING (pick 82, next user pick 86)
+  -> identifies four selections before the user's turn
+  -> treats targets as conditional on survival
+  -> does not instruct the user to select immediately
+
+ON_CLOCK (pick 86, next user pick 95)
+  -> receives 15 deterministic candidates
+  -> compares scarcity, roster depth, market evidence, return risk, and loss cost
+  -> may agree with or explicitly override deterministic ordering
+```
+
+The first ON_CLOCK Action recommendation selected Rico Dowdle and agreed with the deterministic
+leader because of tier scarcity, RB depth need, high return risk, and market position. The first
+WAITING response correctly shifted to a conditional Metcalf/Pollard/Dowdle target set based on the
+four-pick exposure window. These are behavioral validation observations, not new recommendation
+rules to hard-code.
+
+When testing with a historical mock, work from a backup and restore the original state after the
+phase tests. Never leave the workspace silently rewound after Action validation.
 
 Future `PlayerContext[]` news/injury snapshots should be added as a separate layer rather than
 folded into factual draft state.
@@ -890,17 +1019,21 @@ Completed foundations:
 26. versioned, JSON-compatible `DraftDecisionPacket` boundary exposing broader deterministic
     context for a downstream AI agent;
 27. bearer-authenticated, read-only HTTP gateway exposing the decision packet and generated
-    OpenAPI schema for a private Custom GPT Action.
+    OpenAPI schema for a private Custom GPT Action;
+28. macOS Keychain secret lifecycle for the gateway and ngrok development credentials;
+29. public HTTPS development path validated through ngrok with correct `200`/`401` authentication
+    behavior and OpenAPI server metadata;
+30. private Custom GPT Action validated end to end against `COMPLETE`, `WAITING`, and `ON_CLOCK`
+    deterministic packet phases.
 
 Next sequence:
 
 1. run the final Sunday-configuration acceptance mock and validate clock/fallback timing;
 2. finish local manual-tier coverage for realistically draftable WRs;
-3. expose the packet through the read-only gateway and connect the private Custom GPT Action;
-4. harden deterministic fallback and model/action failure behavior;
-5. run AI-assisted mocks and compare AI choices with the deterministic top five;
-6. refine compact live-draft UX and add recent-news/injury context;
-7. evaluate richer Yahoo API ingestion when available.
+3. run additional AI-assisted mocks and compare AI choices/explanations with deterministic evidence;
+4. harden deterministic fallback and model/action failure behavior under live-clock pressure;
+5. refine compact live-draft UX and add recent-news/injury context;
+6. evaluate richer Yahoo API ingestion when available.
 
 If schedule pressure increases, reduce scope rather than lowering architecture, typing,
 testing, readability, or maintainability standards.
