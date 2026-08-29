@@ -397,11 +397,31 @@ Install only the gateway runtime when development tooling is not needed:
 python -m pip install -e ".[gateway]"
 ```
 
-Set the bearer secret in the environment rather than putting it in source control or command
-history, then start the server from the project workspace:
+Set the bearer secret in the environment rather than putting it in source control, a `.env`
+file, or shell history. On macOS, store the development secret once in the login Keychain:
 
 ```bash
-export FANTASY_AGENT_GATEWAY_API_KEY="<long-random-secret>"
+export FANTASY_AGENT_GATEWAY_API_KEY="$(
+  python -c 'import secrets; print(secrets.token_urlsafe(32))'
+)"
+security add-generic-password \
+  -a "$USER" \
+  -s "fantasy_football_agent_gateway" \
+  -w "$FANTASY_AGENT_GATEWAY_API_KEY" \
+  -U
+unset FANTASY_AGENT_GATEWAY_API_KEY
+```
+
+The Keychain item persists across terminal sessions and computer reboots. The environment
+variable does not. Load the secret independently in every terminal that needs it:
+
+```bash
+export FANTASY_AGENT_GATEWAY_API_KEY="$(
+  security find-generic-password \
+    -a "$USER" \
+    -s "fantasy_football_agent_gateway" \
+    -w
+)"
 ff-gateway --workspace .
 ```
 
@@ -425,6 +445,139 @@ ff-gateway --workspace . --public-url https://<public-host>
 
 The Action should configure the same bearer secret separately. Never place Yahoo OAuth
 credentials, the gateway secret, or other private credentials in the OpenAPI schema.
+
+Local smoke test from a second terminal after loading the same Keychain secret there:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl \
+  -H "Authorization: Bearer $FANTASY_AGENT_GATEWAY_API_KEY" \
+  http://127.0.0.1:8000/v1/draft/decision
+curl http://127.0.0.1:8000/openapi.json \
+  -o /tmp/fantasy-agent-openapi.json
+```
+
+After testing, remove only the per-shell copy with
+`unset FANTASY_AGENT_GATEWAY_API_KEY`; the Keychain copy remains available for future sessions.
+Rotate the Keychain value by generating a new secret and repeating `security add-generic-password`
+with `-U`. Delete it completely with:
+
+```bash
+security delete-generic-password \
+  -a "$USER" \
+  -s "fantasy_football_agent_gateway"
+```
+
+### Public HTTPS development tunnel
+
+The current development path uses ngrok to expose the local read-only gateway over HTTPS.
+The tunnel is transport only: deterministic draft state and recommendation logic remain local.
+
+Install ngrok on macOS:
+
+```bash
+brew install ngrok
+ngrok version
+```
+
+Store the ngrok account authtoken in macOS Keychain rather than committing it or placing it in
+project configuration. One-time setup:
+
+```bash
+read -s NGROK_AUTHTOKEN
+security add-generic-password \
+  -a "$USER" \
+  -s "fantasy_football_agent_ngrok" \
+  -w "$NGROK_AUTHTOKEN" \
+  -U
+unset NGROK_AUTHTOKEN
+```
+
+For each new tunnel shell, load the token and start ngrok:
+
+```bash
+export NGROK_AUTHTOKEN="$(
+  security find-generic-password \
+    -a "$USER" \
+    -s "fantasy_football_agent_ngrok" \
+    -w
+)"
+ngrok http 8000
+```
+
+Copy the HTTPS forwarding URL shown by ngrok, then restart the gateway with that exact URL so the
+generated OpenAPI document advertises the public Action server:
+
+```bash
+export FANTASY_AGENT_GATEWAY_API_KEY="$(
+  security find-generic-password \
+    -a "$USER" \
+    -s "fantasy_football_agent_gateway" \
+    -w
+)"
+ff-gateway --workspace . --public-url https://<assigned-host>.ngrok-free.dev
+```
+
+Validate the public boundary before configuring ChatGPT:
+
+```bash
+curl https://<assigned-host>.ngrok-free.dev/health
+
+curl -i \
+  https://<assigned-host>.ngrok-free.dev/v1/draft/decision
+
+curl \
+  -H "Authorization: Bearer $FANTASY_AGENT_GATEWAY_API_KEY" \
+  https://<assigned-host>.ngrok-free.dev/v1/draft/decision
+
+curl -s \
+  https://<assigned-host>.ngrok-free.dev/openapi.json \
+  | python -c '
+import json, sys
+schema = json.load(sys.stdin)
+print("OpenAPI:", schema["openapi"])
+print("Servers:", schema.get("servers"))
+print("Paths:", list(schema["paths"]))
+print("Security:", schema["paths"]["/v1/draft/decision"]["get"].get("security"))
+'
+```
+
+Expected behavior is public `200` for `/health`, `401` for an unauthenticated decision request,
+`200` for an authenticated decision request, and an OpenAPI server URL matching the ngrok HTTPS
+host. Keep both `ff-gateway` and ngrok running while the Custom GPT Action is in use.
+
+### Private Custom GPT Action
+
+Create a private Custom GPT Action using:
+
+- authentication: API Key;
+- auth type: Bearer;
+- API key: the same gateway bearer secret stored in macOS Keychain;
+- schema URL: `https://<assigned-host>.ngrok-free.dev/openapi.json`.
+
+The imported schema should expose `getGatewayHealth` and `getDraftDecision`. Keep the GPT private
+during development. The exact reasoning contract used by the GPT is documented in
+`CUSTOM_GPT_INSTRUCTIONS.md`.
+
+The validated Action path is:
+
+```text
+Custom GPT
+    ↓ HTTPS + Bearer
+ngrok development tunnel
+    ↓
+local FastAPI gateway
+    ↓
+DraftDecisionPacket
+    ↓
+deterministic draft engine
+```
+
+Validation should cover all three packet phases:
+
+- `WAITING`: identify future targets and risks without telling the user to draft immediately;
+- `ON_CLOCK`: provide a recommendation, alternatives, tradeoffs, wait risk, and confidence;
+- `COMPLETE`: state that the draft is complete and provide no new pick recommendation.
 
 ## Yahoo Draft-Chat Synchronization
 
@@ -682,9 +835,9 @@ Next priorities:
 1. run a final acceptance mock using the Sunday league configuration and confirm live-clock
    timing/fallback behavior;
 2. improve local manual-tier coverage for realistically draftable wide receivers;
-3. expose `DraftDecisionPacket` through the read-only gateway and connect the private Custom
-   GPT Action;
-4. run AI-assisted mocks and harden the deterministic top-five fallback behavior;
+3. run additional AI-assisted mocks through the validated private Custom GPT Action and compare
+   AI choices with the deterministic evidence packet;
+4. harden deterministic fallback and model/action failure behavior under the live draft clock;
 5. refine the compact live-draft UX and add timestamped recent-news/injury context;
 6. evaluate richer Yahoo API ingestion when available;
 7. consider specialized multi-agent roles only if they add measurable value.
