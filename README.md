@@ -51,7 +51,9 @@ Future AI functionality will consume those results rather than recreate them.
 - Build draft lookahead windows between the current pick and future user picks.
 - Estimate opponent position exposure inside those windows.
 - Evaluate candidates deterministically.
-- Produce a compact top-five deterministic decision-support shortlist for the user or AI.
+- Produce a compact top-five deterministic decision-support shortlist for the user.
+- Build a versioned, JSON-compatible `DraftDecisionPacket` that exposes broader structured
+  deterministic evidence for a downstream AI agent.
 - Distinguish:
   - cross-position candidate desirability;
   - roster fit;
@@ -108,6 +110,29 @@ Yahoo-specific code remains outside the core draft engine so deterministic behav
 tested without network access. The recommendation layer is phase-aware: waiting mode helps
 prepare for the next decision, while on-clock mode helps decide whether to take a player or
 risk waiting until the following pick.
+
+### AI Decision Packet Boundary
+
+`draft.decision_packet` now provides the deterministic boundary that a future recommendation
+agent will consume. It deliberately sits downstream of candidate evaluation and recommendation
+logic instead of asking a model to reconstruct facts from terminal output.
+
+The packet includes:
+
+- factual league, draft, roster, starter-slot, and remaining-capacity context;
+- the user's current decision pick and actual following pick when one exists;
+- a broader ordered candidate set than the five names rendered for human review;
+- typed market, tier, roster-fit, roster-utility, depth-need, scarcity, risk, urgency, and
+  explanation evidence for each candidate;
+- a schema version and JSON-compatible dictionary representation for a stable model boundary.
+
+The packet does **not** contain model-generated conclusions. The future AI layer will reason
+over this deterministic evidence while the top-five shortlist remains the manual fallback.
+
+The initial AI integration target is a private Custom GPT Action backed by a read-only HTTPS
+gateway that exposes this packet. Keep the draft domain layer model-provider-independent: the
+core engine should not depend on an LLM SDK, and the gateway should not be allowed to mutate
+or reconstruct factual draft state.
 
 ## Recommendation Model
 
@@ -335,6 +360,7 @@ The installed entry points are:
 ff-draft
 ff-draft-update
 ff-draft-new
+ff-gateway
 ```
 
 ### Create a Draft Session
@@ -358,6 +384,47 @@ ff-draft-new   --type mock   --slot <SLOT>   --replace   --workspace .
 ```
 
 A custom draft ID may be supplied with `--draft-id`.
+
+## Read-Only Custom GPT Gateway
+
+The optional gateway exposes the current `DraftDecisionPacket` through a small read-only
+HTTP API. It is the intended Action boundary for the initial private Custom GPT integration;
+it does not call an LLM and it has no write endpoint.
+
+Install only the gateway runtime when development tooling is not needed:
+
+```bash
+python -m pip install -e ".[gateway]"
+```
+
+Set the bearer secret in the environment rather than putting it in source control or command
+history, then start the server from the project workspace:
+
+```bash
+export FANTASY_AGENT_GATEWAY_API_KEY="<long-random-secret>"
+ff-gateway --workspace .
+```
+
+The server binds to `127.0.0.1:8000` by default so it is not directly exposed to the local
+network. A later deployment/tunnel layer can provide the public HTTPS URL required by the
+Custom GPT Action without changing the deterministic draft engine.
+
+Read-only routes:
+
+```text
+GET /health                public liveness only
+GET /v1/draft/decision     bearer-authenticated DraftDecisionPacket
+GET /openapi.json          generated OpenAPI action schema
+```
+
+If a stable public URL is known when the gateway starts, include it in the generated schema:
+
+```bash
+ff-gateway --workspace . --public-url https://<public-host>
+```
+
+The Action should configure the same bearer secret separately. Never place Yahoo OAuth
+credentials, the gateway secret, or other private credentials in the OpenAPI schema.
 
 ## Yahoo Draft-Chat Synchronization
 
@@ -612,12 +679,13 @@ compact decision set rather than an autonomous final-pick decision.
 
 Next priorities:
 
-1. run more live Yahoo mock drafts and collect recommendation regressions;
-2. refine the live-draft decision workflow based on clock pressure and readability;
-3. add timestamped recent-news and injury context as a separate input layer;
-4. add one AI recommendation agent over a broader structured candidate packet rather than
-   only the rendered top five;
-5. run AI-assisted mocks and harden the deterministic top-five fallback behavior;
+1. run a final acceptance mock using the Sunday league configuration and confirm live-clock
+   timing/fallback behavior;
+2. improve local manual-tier coverage for realistically draftable wide receivers;
+3. expose `DraftDecisionPacket` through the read-only gateway and connect the private Custom
+   GPT Action;
+4. run AI-assisted mocks and harden the deterministic top-five fallback behavior;
+5. refine the compact live-draft UX and add timestamped recent-news/injury context;
 6. evaluate richer Yahoo API ingestion when available;
 7. consider specialized multi-agent roles only if they add measurable value.
 

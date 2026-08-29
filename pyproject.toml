@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fantasy_football_agent"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Agentic fantasy football assistant with deterministic draft analysis and Yahoo Fantasy integration."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,12 +19,19 @@ dependencies = [
 
 
 [project.optional-dependencies]
+gateway = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
 dev = [
+    "fastapi>=0.115,<1",
+    "httpx2>=2,<3",
     "mypy",
     "pre-commit",
     "pytest",
     "pytest-cov",
     "ruff",
+    "uvicorn>=0.30,<1",
 ]
 
 
@@ -32,6 +39,7 @@ dev = [
 ff-draft = "fantasy_football_agent.cli.draft_analyzer:main"
 ff-draft-update = "fantasy_football_agent.cli.draft_updater:main"
 ff-draft-new = "fantasy_football_agent.cli.draft_creator:main"
+ff-gateway = "fantasy_football_agent.gateway.app:main"
 
 
 [tool.setuptools.packages.find]

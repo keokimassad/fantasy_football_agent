@@ -756,23 +756,56 @@ Preferred workflow:
 
 ## AI Integration Principle
 
-The first AI layer should consume structured deterministic candidate evaluations.
+The AI boundary is now implemented in `draft.decision_packet`. The first AI agent should
+consume `DraftDecisionPacket` rather than parse terminal output or reconstruct deterministic
+facts.
 
-It should not parse a giant terminal dump as its primary interface.
-
-Likely input:
+Current packet shape:
 
 ```text
-DraftState summary
-current recommendation phase
-broader plausible CandidateRecommendation[] / CandidateEvaluation[] packet
-PlayerContext[]
-small league context
+DraftDecisionPacket
+  schema_version
+  DraftDecisionContext
+    league / draft identity
+    current, decision, and following picks
+    user roster and position counts
+    open starter slots
+    remaining / optional draft capacity
+    roster requirements and scoring context
+  CandidateDecisionEvidence[]
+    player identity and market data
+    manual-tier / scarcity evidence
+    roster fit / utility / depth need
+    desirability / risks / loss cost / urgency
+    explanation signals
 ```
 
-Do not restrict the AI to only the five candidates rendered for compact human review. The
-AI may consume a broader deterministic candidate packet, while the top-five shortlist remains
-the fast manual fallback.
+The default packet exposes more candidates than the five names rendered for compact human
+review. The human top-five shortlist therefore remains a fast deterministic fallback while
+the AI receives enough neighboring evidence to compare alternatives.
+
+The initial integration target is a private Custom GPT Action over a read-only HTTPS gateway.
+Keep provider/network concerns outside the draft domain package: the gateway may serialize the
+packet, but it must not become a second source of truth for draft state or recommendation math.
+
+The HTTP boundary lives under `fantasy_football_agent.gateway` and should remain thin:
+
+```text
+GET /health
+GET /v1/draft/decision  -> build_current_decision_packet(...)
+GET /openapi.json       -> generated Action schema
+```
+
+`/v1/draft/decision` is bearer-authenticated and read-only. The default server binds only to
+`127.0.0.1`; public HTTPS exposure belongs to deployment/tunnel configuration, not the draft
+domain. The gateway API key comes from `FANTASY_AGENT_GATEWAY_API_KEY` and must never be
+committed.
+
+Keep HTTP tests split from deterministic packet tests. The gateway should prove authentication,
+OpenAPI shape, and serialization, while draft behavior remains covered in `tests/unit/draft`.
+
+Future `PlayerContext[]` news/injury snapshots should be added as a separate layer rather than
+folded into factual draft state.
 
 Likely output:
 
@@ -853,18 +886,21 @@ Completed foundations:
 23. typed position-depth need integrated into roster utility and recommendation ordering;
 24. real-mock regressions covering same-position Rank/ADP disagreement, tier-quality
     scarcity, shortlist composition, and RB-depth vs excess-WR construction;
-25. semantic `Test...` class organization for larger test modules.
+25. semantic `Test...` class organization for larger test modules;
+26. versioned, JSON-compatible `DraftDecisionPacket` boundary exposing broader deterministic
+    context for a downstream AI agent;
+27. bearer-authenticated, read-only HTTP gateway exposing the decision packet and generated
+    OpenAPI schema for a private Custom GPT Action.
 
 Next sequence:
 
-1. run one more targeted Yahoo mock against the market-consensus/tier-gap regressions;
-2. collect recommendation regressions and timing feedback;
-3. refine compact live-draft UX;
-4. add recent-news and injury context;
-5. add one AI recommendation agent over a broader deterministic candidate packet;
-6. run AI-assisted mocks;
-7. harden fallback and failure behavior;
-8. evaluate richer Yahoo API ingestion when available.
+1. run the final Sunday-configuration acceptance mock and validate clock/fallback timing;
+2. finish local manual-tier coverage for realistically draftable WRs;
+3. expose the packet through the read-only gateway and connect the private Custom GPT Action;
+4. harden deterministic fallback and model/action failure behavior;
+5. run AI-assisted mocks and compare AI choices with the deterministic top five;
+6. refine compact live-draft UX and add recent-news/injury context;
+7. evaluate richer Yahoo API ingestion when available.
 
 If schedule pressure increases, reduce scope rather than lowering architecture, typing,
 testing, readability, or maintainability standards.
