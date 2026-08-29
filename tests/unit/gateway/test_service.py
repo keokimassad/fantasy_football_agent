@@ -1,0 +1,112 @@
+"""Unit tests for workspace-backed decision-packet construction."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from fantasy_football_agent.application_paths import ApplicationPaths
+from fantasy_football_agent.draft.decision_packet import DecisionPhase
+from fantasy_football_agent.gateway.service import build_current_decision_packet
+
+pytestmark = pytest.mark.unit
+
+
+def _write_workspace(
+    workspace: Path,
+    *,
+    current_overall_pick: int = 4,
+) -> None:
+    """Write a minimal deterministic workspace for gateway-service tests."""
+    (workspace / "config").mkdir()
+    (workspace / "data").mkdir()
+
+    league = {
+        "league_name": "Gateway Test League",
+        "teams": 10,
+        "draft": {"type": "snake"},
+        "roster": {
+            "QB": 1,
+            "WR": 2,
+            "RB": 2,
+            "TE": 1,
+            "FLEX": 1,
+            "K": 1,
+            "DEF": 1,
+            "BENCH": 6,
+            "IR": 2,
+        },
+        "flex_positions": ["RB", "WR", "TE"],
+        "scoring": {"receptions": 0.5},
+        "draft_strategy": {
+            "position_roster_targets": {
+                "QB": 1,
+                "RB": 4,
+                "WR": 4,
+                "TE": 1,
+                "K": 1,
+                "DEF": 1,
+            }
+        },
+    }
+    state = {
+        "draft_id": "gateway-mock",
+        "session_type": "mock",
+        "my_draft_slot": 4,
+        "current_overall_pick": current_overall_pick,
+        "picks": [],
+    }
+
+    (workspace / "config" / "league.json").write_text(
+        json.dumps(league),
+        encoding="utf-8",
+    )
+    (workspace / "data" / "draft_state.json").write_text(
+        json.dumps(state),
+        encoding="utf-8",
+    )
+    (workspace / "data" / "yahoo_rankings_2026.csv").write_text(
+        "\n".join(
+            [
+                "Rank,ADP,Player Name,Position,Team,Bye,% Drafted,Yahoo Player ID,Manual - Tier",
+                "1,3.0,Gateway Receiver,WR,TST,10,99%,30001,1",
+                "2,5.0,Gateway Running Back,RB,TST,11,98%,30002,1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_service_builds_current_packet_from_workspace(tmp_path: Path) -> None:
+    """
+    GIVEN: a valid local draft workspace with two available players
+    WHEN: the gateway service builds the current decision packet
+    THEN: the packet contains factual league context and deterministic candidates
+    """
+    _write_workspace(tmp_path)
+
+    packet = build_current_decision_packet(ApplicationPaths(workspace=tmp_path))
+
+    assert packet.context.league_name == "Gateway Test League"
+    assert packet.context.phase == DecisionPhase.ON_CLOCK
+    assert [candidate.name for candidate in packet.candidates] == [
+        "Gateway Receiver",
+        "Gateway Running Back",
+    ]
+
+
+def test_service_returns_completed_packet_after_final_pick(tmp_path: Path) -> None:
+    """
+    GIVEN: a valid workspace whose draft has advanced beyond pick one hundred fifty
+    WHEN: the gateway service builds the current decision packet
+    THEN: it reports a complete phase without inventing another candidate decision
+    """
+    _write_workspace(tmp_path, current_overall_pick=151)
+    (tmp_path / "data" / "yahoo_rankings_2026.csv").unlink()
+
+    packet = build_current_decision_packet(ApplicationPaths(workspace=tmp_path))
+
+    assert packet.context.phase == DecisionPhase.COMPLETE
+    assert packet.context.decision_pick is None
+    assert packet.candidates == ()
