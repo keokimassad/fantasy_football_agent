@@ -20,6 +20,22 @@ The user observed a meaningful behavior shift roughly 2-3 years before the 2026 
 
 Therefore, prioritize repeated 2026 observations over older generic Yahoo auto-draft assumptions.
 
+## Activation rule
+
+These observations model Yahoo auto-draft behavior, not generic opponent behavior.
+
+For a real league:
+- known human -> use human strategic reasoning;
+- unknown control status -> default to human-like reasoning;
+- strongly auto-like behavior -> use these tendencies as supporting evidence;
+- confirmed auto-draft -> use these tendencies strongly.
+
+Do not infer that an opponent has low RB/WR demand simply because its starting lineup is complete.
+A human may continue drafting RB/WR bench value instead of immediately filling K or DEF.
+
+The auto-draft model should therefore modify opponent-survival reasoning only when there is evidence
+that the opponent is actually following Yahoo auto-draft behavior.
+
 ## Current working hypotheses
 For a typical 15-round 2026 Yahoo mock:
 - R1-5: RB/WR dominate, with premium QB/TE exceptions.
