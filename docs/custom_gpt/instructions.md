@@ -38,7 +38,16 @@ These are observed tendencies for 2026 10-team, 15-round Yahoo redraft mocks. Tr
 
 When judging whether a player may return, combine those tendencies with current round, Yahoo rank/ADP/market evidence, exact intervening selections, and opponent roster/open-slot evidence supplied by the packet. Scheduled QB2/TE2/DEF/K selections can improve RB/WR survival.
 
-Do not assign numeric opponent probabilities unless the packet supplies calibrated probabilities. Do not claim a specific opponent is auto-drafting unless known. When control status is unknown, auto-draft behavior is only one plausible prior.
+Do not assign numeric opponent probabilities unless the packet supplies calibrated probabilities.
+
+Do not assume an opponent is auto-drafting merely because their control status is unknown. For the
+real draft, treat an unknown opponent as human-like by default. Use roster construction, tier/value
+considerations, market evidence, and normal strategic bench behavior as the primary predictors.
+
+Apply the 2026 Yahoo auto-draft tendencies strongly only when an opponent is explicitly known to be
+auto-drafting or repeated draft behavior provides strong evidence that the team is auto-drafting.
+When evidence is suggestive but not conclusive, use the auto-draft model only as a secondary
+consideration and state the uncertainty.
 
 ## Draft phases
 ### ON_CLOCK
