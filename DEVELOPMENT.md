@@ -585,6 +585,25 @@ ffmock() {
 
 The `&&` prevents analysis from running after a failed synchronization. Successful analysis also repeats live pick status and the top three deterministic/prep candidates in a compact footer at the bottom of the report.
 
+### Automatic draft observability
+
+Every draft session writes an ignored local JSONL event stream to `data/draft_logs/<draft-id>.jsonl`; no additional live-draft command is required. Observability is best-effort and must never interrupt draft execution.
+
+The first event snapshots reproducibility inputs that are safe to store locally: league configuration, the full rankings CSV, player overrides when present, Custom GPT instructions/knowledge, Python version, and Git commit/branch/dirty state. It intentionally excludes `oauth2.json`, gateway bearer secrets, ngrok credentials, environment variables, and other credentials.
+
+Runtime events capture:
+
+- exact raw Yahoo text, parsed-pick count, and draft state before a sync attempt;
+- sync success/failure, draft state afterward, and any persisted stale marker;
+- manual pick and undo mutations;
+- exact `DraftDecisionPacket` payloads produced by `ff-draft`;
+- exact `DraftDecisionPacket` payloads served through `getDraftDecision`; and
+- CLI/gateway decision attempts blocked because draft state is stale.
+
+Each decision event includes its source (`cli` or `gateway`) and full deterministic state so packet behavior can be reconstructed against the draft timeline. Gateway packet logging is especially important because it preserves the exact AI input boundary for later mock analysis. The logger does not capture the Custom GPT's generated prose or user ChatGPT messages; adding a writable second Action solely for response logging would increase live-draft latency and expand the gateway's authority without improving deterministic safety.
+
+Raw Yahoo clipboard text is intentionally retained for parser debugging. Treat `data/draft_logs/` as local potentially sensitive runtime data and do not commit it.
+
 Create the mock session only after Yahoo reveals the slot:
 
 ```bash

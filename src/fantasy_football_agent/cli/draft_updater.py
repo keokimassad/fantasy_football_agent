@@ -24,6 +24,11 @@ from fantasy_football_agent.draft.sync_status import (
     load_draft_sync_failure,
     mark_draft_state_stale,
 )
+from fantasy_football_agent.observability import (
+    record_state_change,
+    record_yahoo_sync_attempt,
+    record_yahoo_sync_result,
+)
 from fantasy_football_agent.yahoo.draft_chat import (
     AmbiguousYahooPlayerError,
     parse_yahoo_draft_chat,
@@ -314,13 +319,27 @@ def main() -> None:
             )
             return
 
+        yahoo_text = sys.stdin.read()
+        parsed_pick_count = len(parse_yahoo_draft_chat(yahoo_text))
+        attempt_event_id = record_yahoo_sync_attempt(
+            paths,
+            state,
+            raw_text=yahoo_text,
+            parsed_pick_count=parsed_pick_count,
+        )
         sync_succeeded = _sync_yahoo_chat(
-            text=sys.stdin.read(),
+            text=yahoo_text,
             state=state,
             league=league,
             rankings=rankings,
             draft_state_path=paths.draft_state,
             sync_status_path=paths.draft_sync_status,
+        )
+        record_yahoo_sync_result(
+            paths,
+            state,
+            attempt_event_id=attempt_event_id,
+            success=sync_succeeded,
         )
 
         if not sync_succeeded:
@@ -341,6 +360,13 @@ def main() -> None:
         save_draft_state(
             paths.draft_state,
             state,
+        )
+
+        record_state_change(
+            paths,
+            state,
+            action="undo",
+            pick=undone_pick,
         )
 
         print()
@@ -379,6 +405,12 @@ def main() -> None:
         save_draft_state(
             paths.draft_state,
             state,
+        )
+        record_state_change(
+            paths,
+            state,
+            action="manual_pick",
+            pick=pick,
         )
 
         print(f"  #{pick.overall} T{pick.team_id} {pick.player} ({pick.position})")

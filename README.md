@@ -32,6 +32,7 @@ The project is currently **AI-assisted mock-draft ready**: Yahoo mock drafts can
 - Preserves required-starter options when late picks can no longer all be spent on optional depth.
 - Exposes the current packet through a bearer-authenticated, read-only FastAPI gateway.
 - Supports a private Custom GPT Action that refreshes deterministic state before current-draft decisions.
+- Automatically records local, analysis-ready draft telemetry including Yahoo sync input/results, deterministic state, and exact CLI/gateway `DraftDecisionPacket` snapshots.
 
 ## Architecture
 
@@ -90,6 +91,7 @@ fantasy_football_agent/
 │       │   ├── analysis.py
 │       │   ├── decision_packet.py
 │       │   ├── market_overrides.py
+│       ├── observability.py
 │       │   ├── models.py
 │       │   ├── rankings.py
 │       │   ├── session.py
@@ -245,6 +247,20 @@ ff-draft --workspace .
 ```
 
 This keeps synchronization and analysis loosely coupled while the live mock-draft UX is being evaluated.
+
+### Automatic Draft Telemetry
+
+No extra command is required during a mock or actual draft. The normal create/sync/analyze/GPT workflow automatically appends analysis-ready JSONL events under:
+
+```text
+data/draft_logs/<draft-id>.jsonl
+```
+
+The first event snapshots the non-secret inputs needed for later reproduction: league config, rankings, player overrides, version-controlled Custom GPT instructions/knowledge, Python version, and Git revision. Runtime events then record exact Yahoo text supplied to synchronization, pre/post-sync draft state, stale-state outcomes, manual corrections/undo, CLI decision packets, gateway decision packets served to the Custom GPT, and blocked stale-state decision attempts.
+
+`data/draft_logs/` is ignored by Git. Raw Yahoo text is retained locally because it is useful for parser/synchronization debugging, so copied human chat text may also appear when it was part of the selected Yahoo range. Credentials and OAuth files are never captured.
+
+The log records the exact deterministic packet supplied to the GPT Action, but it does not record the GPT's prose response or the user's ChatGPT messages because those do not pass through the local read-only gateway.
 
 ## Manual Pick Updates
 
