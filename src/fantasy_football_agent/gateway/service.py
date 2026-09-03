@@ -32,7 +32,7 @@ def build_current_decision_packet(paths: ApplicationPaths) -> DraftDecisionPacke
     if is_draft_complete(state, league):
         return build_draft_decision_packet([], state, league)
 
-    rankings = load_rankings(paths.rankings)
+    rankings = load_rankings(paths.rankings, paths.player_overrides)
     available = get_available_players(rankings, state)
     evaluations = evaluate_candidates(available, state, league)
 

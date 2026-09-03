@@ -85,6 +85,89 @@ class TestRankingLoading:
         assert rankings[1].drafted_percentage is None
         assert rankings[1].manual_tier is None
 
+    def test_applies_ignore_adp_policy_without_losing_source_value(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """
+        GIVEN: source ADP is stale for a player with a local IGNORE override
+        WHEN: rankings are loaded with the override file
+        THEN: current decisions ignore ADP while preserving the source value for auditability
+        """
+        rankings_path = tmp_path / "rankings.csv"
+        rankings_path.write_text(
+            (
+                "Rank,ADP,Player Name,Position,Team,Bye,% Drafted,"
+                "Yahoo Player ID,Manual - Tier\n"
+                "108,35,Josh Jacobs,RB,GB,11,100%,31856,10\n"
+            ),
+            encoding="utf-8",
+        )
+        overrides_path = tmp_path / "player_overrides_2026.json"
+        overrides_path.write_text(
+            """{
+  "players": [
+    {
+      "yahoo_player_id": 31856,
+      "adp_policy": "IGNORE",
+      "reason": "Source ADP predates material availability news",
+      "as_of": "2026-08-31"
+    }
+  ]
+}
+""",
+            encoding="utf-8",
+        )
+
+        player = load_rankings(rankings_path, overrides_path)[0]
+
+        assert player.source_adp == 35.0
+        assert player.adp is None
+        assert player.adp_policy.value == "IGNORE"
+        assert player.adp_override_reason == "Source ADP predates material availability news"
+        assert player.adp_override_as_of == "2026-08-31"
+
+    def test_applies_explicit_adp_override(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """
+        GIVEN: an audited replacement ADP is explicitly configured
+        WHEN: rankings are loaded with the override
+        THEN: deterministic market calculations receive the replacement ADP
+        """
+        rankings_path = tmp_path / "rankings.csv"
+        rankings_path.write_text(
+            (
+                "Rank,ADP,Player Name,Position,Team,Bye,% Drafted,"
+                "Yahoo Player ID,Manual - Tier\n"
+                "50,35,Player One,RB,TST,7,90%,10001,5\n"
+            ),
+            encoding="utf-8",
+        )
+        overrides_path = tmp_path / "player_overrides_2026.json"
+        overrides_path.write_text(
+            """{
+  "players": [
+    {
+      "yahoo_player_id": 10001,
+      "adp_policy": "OVERRIDE",
+      "adp": 70.0,
+      "reason": "Audited current market correction",
+      "as_of": "2026-08-31"
+    }
+  ]
+}
+""",
+            encoding="utf-8",
+        )
+
+        player = load_rankings(rankings_path, overrides_path)[0]
+
+        assert player.source_adp == 35.0
+        assert player.adp == 70.0
+        assert player.adp_policy.value == "OVERRIDE"
+
     def test_accepts_decimal_manual_tier(
         self,
         tmp_path: Path,

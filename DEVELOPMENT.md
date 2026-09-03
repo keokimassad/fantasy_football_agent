@@ -747,6 +747,51 @@ user final decision
 The deterministic shortlist remains the fallback if the gateway, tunnel, Action, or model fails or
 cannot complete safely within the draft clock.
 
+### Phase-aware AI candidate frontier
+
+The five-player deterministic CLI shortlist and the AI packet solve different problems. Keep the CLI shortlist compact. The `DraftDecisionPacket` uses a broader phase-aware frontier:
+
+```text
+WAITING
+    dynamic horizon = selections before decision + target set + uncertainty buffer
+    minimum 20, maximum 50 candidates before positional supplementation
+
+ON_CLOCK
+    deterministic top-five anchor
+    top 10 by effective current market timing
+    guarantee at least RB 3 / WR 3 / QB 2 / TE 2 when available
+
+ON_CLOCK consecutive turn
+    deterministic top-five anchor
+    broader top-15 market horizon
+    same skill-position minimums
+    context.consecutive_turn = true
+```
+
+The deterministic top-five is always retained as an anchor. The additional horizon is selected by effective market timing rather than by repeating the deterministic comparator, which prevents low-desirability specialist depth from consuming the entire AI boundary. Positional minimums are additive safeguards, not quotas or maximums. DEF/K are not guaranteed merely because those starter slots are open; one is supplemented only when its deterministic desirability is not `LOW`, while specialists that already belong in the deterministic anchor or market horizon remain visible naturally.
+
+For `WAITING`, the market horizon deliberately exceeds the number of intervening selections. Skill-position minimums also expand by snake-length wait cycles: a standard 18-pick end-turn wait carries at least seven RBs, seven WRs, four QBs, and four TEs when available. This lets the model distinguish premium fall-watch players from realistic future decision and contingency targets instead of receiving a list likely to be exhausted before the user's turn.
+
+An explicit `candidate_limit` remains available for tests/diagnostics and bypasses phase-aware supplementation.
+
+### Local market-data overrides
+
+The Yahoo rankings CSV remains the immutable source snapshot. Material news can make historical ADP actively misleading before the next full data refresh, so the runtime may load `data/player_overrides.json` after rankings parsing. The file is local/ignored by Git; `data/player_overrides.example.json` documents the schema.
+
+Supported policies:
+
+```text
+VALID      source ADP remains effective
+IGNORE     source ADP is preserved but excluded from market calculations
+OVERRIDE   a supplied replacement ADP becomes effective while source ADP is preserved
+```
+
+Each override is keyed by Yahoo Player ID and must include an auditable reason and `as_of` date. Prefer `IGNORE` when news invalidates historical ADP but no trustworthy replacement value exists. This avoids inventing a synthetic market number.
+
+`Player.adp` and packet `candidate.adp` always mean the effective ADP used by the deterministic engine. `source_adp` is historical/audit metadata. ADP-derived value, availability, return-risk, and recommendation signals must use the effective value only.
+
+The initial regression case is Josh Jacobs: source ADP 35 is retained for auditability, but an `IGNORE` override prevents that stale pre-news number from generating `FALLEN_PAST_ADP` or other current-value signals.
+
 ### Custom GPT documentation layout
 
 Keep provider-facing Custom GPT material under:
@@ -778,7 +823,8 @@ Keep rules that must apply to every draft decision in `instructions.md`, includi
 - refresh `getDraftDecision` before current-state answers;
 - deterministic packet is authoritative for factual draft state;
 - recommend only candidates supplied by the packet;
-- phase-specific `WAITING`, `ON_CLOCK`, and `COMPLETE` behavior;
+- phase-specific `WAITING`, `ON_CLOCK`, consecutive-turn, and `COMPLETE` behavior;
+- use effective ADP policy rather than historical source ADP when an override is present;
 - no invented availability, injuries, roles, opponent behavior, or draft facts;
 - deterministic fallback on Action failure;
 - read-only authority; and
@@ -816,11 +862,12 @@ When Custom GPT behavior changes:
 
 1. update the repository copy first;
 2. keep `instructions.md` concise and provider-ready;
-3. update/re-upload Knowledge documents when their content changes;
-4. validate the Action against fresh `WAITING`, `ON_CLOCK`, and `COMPLETE` states when behavior
+3. re-import the generated `/openapi.json` into the Custom GPT Action when the packet schema changes;
+4. update/re-upload Knowledge documents when their content changes;
+5. validate the Action against fresh `WAITING`, `ON_CLOCK`, and `COMPLETE` states when behavior
    changes materially;
-5. keep the deterministic CLI functional as an independent fallback; and
-6. never commit bearer secrets, ngrok auth tokens, Yahoo OAuth credentials, or private Action
+6. keep the deterministic CLI functional as an independent fallback; and
+7. never commit bearer secrets, ngrok auth tokens, Yahoo OAuth credentials, or private Action
    credentials.
 
 Changes to the Python decision packet or OpenAPI schema should be tested independently from prompt
@@ -865,7 +912,7 @@ Validated foundations include:
 1. deterministic league, state, roster, tier, and snake-order modeling;
 2. safe Yahoo Draft Chat parsing, reconciliation, overlap handling, persistence, and undo;
 3. phase-aware deterministic candidate evaluation and explainable top-five fallback;
-4. a versioned, JSON-compatible `DraftDecisionPacket` with a broader AI candidate set;
+4. a versioned, JSON-compatible `DraftDecisionPacket` with phase-aware candidate horizons, skill-position breadth, and consecutive-turn context;
 5. a read-only bearer-authenticated FastAPI gateway;
 6. public HTTPS tunnel validation without exposing the local service directly;
 7. a private Custom GPT Action consuming the generated OpenAPI schema;
@@ -873,7 +920,9 @@ Validated foundations include:
 9. deterministic fallback preserved when external AI infrastructure is unavailable;
 10. compact 2026 Yahoo auto-draft guidance separated from longer Knowledge context; and
 11. current rankings that preserve manual tiers while carrying dated expert tiers, position rank,
-    Yahoo status, and injury context.
+    Yahoo status, and injury context;
+12. local audited ADP `IGNORE` / `OVERRIDE` policy for stale market snapshots; and
+13. slot-one regression coverage for long waiting horizons and consecutive-turn candidate breadth.
 
 Next sequence:
 

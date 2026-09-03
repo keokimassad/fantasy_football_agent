@@ -119,7 +119,7 @@ def test_decision_endpoint_returns_deterministic_packet_for_valid_token(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["context"]["phase"] == "ON_CLOCK"
     assert payload["candidates"][0]["name"] == "Gateway Candidate"
 
