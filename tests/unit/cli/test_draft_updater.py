@@ -776,6 +776,50 @@ class TestYahooChatUpdates:
         assert "No Yahoo draft selections found. Draft state unchanged." in output
         assert _load_saved_state(tmp_path) == original_state
 
+    def test_no_selections_during_active_draft_fails_without_marking_state_stale(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """
+        GIVEN: an active draft and copied input containing no parseable Yahoo selections
+        WHEN: Yahoo synchronization is requested
+        THEN: the updater exits nonzero so analysis cannot silently continue on old state
+        """
+        _write_workspace(
+            tmp_path,
+            current_overall_pick=2,
+            picks=[
+                {
+                    "overall": 1,
+                    "round": 1,
+                    "pick_in_round": 1,
+                    "team_id": 1,
+                    "player": "Player One",
+                    "position": "RB",
+                    "yahoo_player_id": 10001,
+                }
+            ],
+        )
+        original_state = _load_saved_state(tmp_path)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("hello everyone"))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ff-draft-update", "--yahoo-chat", "--workspace", str(tmp_path)],
+        )
+
+        with pytest.raises(SystemExit) as exit_info:
+            main()
+
+        output = capsys.readouterr().out
+        assert exit_info.value.code == 1
+        assert "No Yahoo draft selections were parsed for an active draft" in output
+        assert "Copy a recent Yahoo draft-chat range" in output
+        assert _load_saved_state(tmp_path) == original_state
+        assert not (tmp_path / "data" / "draft_sync_status.json").exists()
+
     def test_successful_yahoo_sync_clears_stale_marker_after_catching_up(
         self,
         tmp_path: Path,

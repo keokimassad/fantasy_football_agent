@@ -572,7 +572,7 @@ Expected behavior:
 - conflicting overlap stops synchronization;
 - a missing-pick gap stops synchronization.
 
-Fatal Yahoo synchronization failures mark the active draft stale. While stale, both `ff-draft` and the decision gateway refuse recommendations until a later successful Yahoo sync catches up beyond the observed failure point.
+Fatal Yahoo synchronization failures mark the active draft stale. While stale, both `ff-draft` and the decision gateway refuse recommendations until a later successful Yahoo sync catches up beyond the observed failure point. An active-draft Yahoo sync that parses zero selections also exits nonzero so the `ffmock` chain stops, but it does not persist a stale marker because no newer Yahoo pick was actually observed.
 
 ## macOS Mock Helper
 
@@ -772,7 +772,7 @@ ON_CLOCK consecutive turn
     context.consecutive_turn = true
 ```
 
-The deterministic top-five is always retained as an anchor. The additional horizon is selected by effective market timing rather than by repeating the deterministic comparator, which prevents low-desirability specialist depth from consuming the entire AI boundary. Positional minimums are additive safeguards, not quotas or maximums. DEF/K are not guaranteed merely because those starter slots are open; one is supplemented only when its deterministic desirability is not `LOW`, while specialists that already belong in the deterministic anchor or market horizon remain visible naturally.
+The deterministic top-five is always retained as an anchor. The additional horizon is selected by effective market timing rather than by repeating the deterministic comparator, which prevents low-desirability specialist depth from consuming the entire AI boundary. Positional minimums are additive safeguards, not quotas or maximums. DEF/K are not guaranteed merely because those starter slots are open; one is normally supplemented only when its deterministic desirability is not `LOW`. Once `optional_draft_capacity` is smaller than the number of user selections represented by the current decision, the frontier also guarantees options for every open required starter slot so a normal or consecutive-turn decision can preserve a legal finish.
 
 For `WAITING`, the market horizon deliberately exceeds the number of intervening selections. Skill-position minimums also expand by snake-length wait cycles: a standard 18-pick end-turn wait carries at least seven RBs, seven WRs, four QBs, and four TEs when available. This lets the model distinguish premium fall-watch players from realistic future decision and contingency targets instead of receiving a list likely to be exhausted before the user's turn.
 
