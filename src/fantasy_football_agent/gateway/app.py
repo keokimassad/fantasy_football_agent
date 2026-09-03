@@ -14,6 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from fantasy_football_agent.application_paths import ApplicationPaths
 from fantasy_football_agent.draft.decision_packet import DraftDecisionPacket
+from fantasy_football_agent.draft.sync_status import DraftStateStaleError
 from fantasy_football_agent.gateway.service import build_current_decision_packet
 
 DEFAULT_GATEWAY_HOST = "127.0.0.1"
@@ -122,7 +123,16 @@ def create_app(
     )
     def get_draft_decision() -> DraftDecisionPacket:
         """Return the latest deterministic draft decision packet."""
-        return packet_provider()
+        try:
+            return packet_provider()
+        except DraftStateStaleError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Draft state is stale because Yahoo synchronization failed: "
+                    f"{error.failure.message}"
+                ),
+            ) from error
 
     return app
 

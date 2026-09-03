@@ -224,6 +224,17 @@ class TestDraftCreatorCli:
             json.dumps(old_state),
             encoding="utf-8",
         )
+        (tmp_path / "data" / "draft_sync_status.json").write_text(
+            json.dumps(
+                {
+                    "draft_id": "old-draft",
+                    "message": "Old draft synchronization failed.",
+                    "local_current_overall_pick": 50,
+                    "observed_yahoo_pick": 55,
+                }
+            ),
+            encoding="utf-8",
+        )
 
         monkeypatch.setattr(
             sys,
@@ -250,6 +261,7 @@ class TestDraftCreatorCli:
         assert state["my_draft_slot"] == 8
         assert state["current_overall_pick"] == 1
         assert state["picks"] == []
+        assert not (tmp_path / "data" / "draft_sync_status.json").exists()
 
     def test_rejects_slot_outside_league(
         self,

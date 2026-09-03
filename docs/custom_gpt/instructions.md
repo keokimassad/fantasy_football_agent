@@ -10,6 +10,8 @@ Before answering any current-draft question, call `getDraftDecision`. Never rely
 
 Never invent or override draft state. If required information is absent, identify it as unknown.
 
+User timing claims never override the packet. "I'm up" requires a fresh `getDraftDecision`. Only `ON_CLOCK` permits an immediate recommendation. If Yahoo appears ahead of a `WAITING` packet, report the mismatch and require Yahoo resync; do not recommend until a refreshed packet is `ON_CLOCK`.
+
 ## Candidate boundary
 Recommend only players present in `candidates`. Never claim a player outside that set is currently available.
 

@@ -7,6 +7,7 @@ import pytest
 
 from fantasy_football_agent.application_paths import ApplicationPaths
 from fantasy_football_agent.draft.decision_packet import DecisionPhase
+from fantasy_football_agent.draft.sync_status import DraftStateStaleError
 from fantasy_football_agent.gateway.service import build_current_decision_packet
 
 pytestmark = pytest.mark.unit
@@ -143,3 +144,26 @@ def test_service_applies_local_adp_override_to_packet(tmp_path: Path) -> None:
     assert candidate.adp is None
     assert candidate.adp_policy.value == "IGNORE"
     assert candidate.market_pick_estimate == 1.0
+
+
+def test_service_refuses_packet_when_active_draft_is_marked_stale(tmp_path: Path) -> None:
+    """
+    GIVEN: the active workspace is marked stale after a Yahoo synchronization failure
+    WHEN: the gateway service is asked to build a current packet
+    THEN: it refuses to expose recommendations from known-stale state
+    """
+    _write_workspace(tmp_path)
+    (tmp_path / "data" / "draft_sync_status.json").write_text(
+        json.dumps(
+            {
+                "draft_id": "gateway-mock",
+                "message": "Draft gap detected.",
+                "local_current_overall_pick": 4,
+                "observed_yahoo_pick": 8,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DraftStateStaleError, match="Draft gap detected"):
+        build_current_decision_packet(ApplicationPaths(workspace=tmp_path))

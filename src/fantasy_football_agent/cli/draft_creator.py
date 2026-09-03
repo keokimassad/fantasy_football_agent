@@ -11,6 +11,7 @@ from fantasy_football_agent.draft.state import (
     load_league_config,
     validate_draft_state,
 )
+from fantasy_football_agent.draft.sync_status import clear_draft_state_stale
 
 
 def _parse_args() -> argparse.Namespace:
@@ -98,6 +99,7 @@ def main() -> None:
         paths.draft_state,
         state,
     )
+    clear_draft_state_stale(paths.draft_sync_status)
 
     print()
     print("Created draft session:")

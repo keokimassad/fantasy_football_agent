@@ -11,6 +11,7 @@ from fantasy_football_agent.draft.decision_packet import (
 )
 from fantasy_football_agent.draft.models import DraftState, LeagueConfig, Player
 from fantasy_football_agent.draft.recommendations import evaluate_candidates
+from fantasy_football_agent.draft.sync_status import DraftStateStaleError, DraftSyncFailure
 from fantasy_football_agent.gateway.app import create_app
 
 pytestmark = pytest.mark.unit
@@ -122,6 +123,37 @@ def test_decision_endpoint_returns_deterministic_packet_for_valid_token(
     assert payload["schema_version"] == 2
     assert payload["context"]["phase"] == "ON_CLOCK"
     assert payload["candidates"][0]["name"] == "Gateway Candidate"
+
+
+def test_decision_endpoint_returns_conflict_when_draft_state_is_stale() -> None:
+    """
+    GIVEN: the packet provider knows Yahoo synchronization left draft state stale
+    WHEN: an authenticated client requests a draft decision
+    THEN: the gateway returns conflict instead of a stale recommendation packet
+    """
+    failure = DraftSyncFailure(
+        draft_id="mock-stale",
+        message="Draft gap detected.",
+        local_current_overall_pick=7,
+        observed_yahoo_pick=11,
+    )
+
+    def stale_provider() -> DraftDecisionPacket:
+        raise DraftStateStaleError(failure)
+
+    app = create_app(
+        packet_provider=stale_provider,
+        api_key="t" * 32,
+    )
+
+    response = TestClient(app).get(
+        "/v1/draft/decision",
+        headers={"Authorization": f"Bearer {'t' * 32}"},
+    )
+
+    assert response.status_code == 409
+    assert "Draft state is stale" in response.json()["detail"]
+    assert "Draft gap detected" in response.json()["detail"]
 
 
 def test_openapi_schema_exposes_only_read_operations_and_bearer_auth(

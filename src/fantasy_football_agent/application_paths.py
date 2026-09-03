@@ -31,6 +31,11 @@ class ApplicationPaths:
         return self.workspace / "data" / "yahoo_rankings_2026.csv"
 
     @property
+    def draft_sync_status(self) -> Path:
+        """Return the local Yahoo synchronization safety marker."""
+        return self.workspace / "data" / "draft_sync_status.json"
+
+    @property
     def player_overrides(self) -> Path:
         """Return the optional local player-market override file."""
         return self.workspace / "data" / "player_overrides_2026.json"

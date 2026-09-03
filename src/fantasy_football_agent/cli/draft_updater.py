@@ -18,6 +18,11 @@ from fantasy_football_agent.draft.state import (
     load_league_config,
     validate_draft_state,
 )
+from fantasy_football_agent.draft.sync_status import (
+    clear_stale_state_after_successful_sync,
+    load_draft_sync_failure,
+    mark_draft_state_stale,
+)
 from fantasy_football_agent.yahoo.draft_chat import (
     AmbiguousYahooPlayerError,
     parse_yahoo_draft_chat,
@@ -119,8 +124,9 @@ def _sync_yahoo_chat(
     league: LeagueConfig,
     rankings: list[Player],
     draft_state_path: Path,
-) -> None:
-    """Reconcile copied Yahoo draft-chat selections and persist new picks."""
+    sync_status_path: Path,
+) -> bool:
+    """Reconcile copied Yahoo draft-chat selections and report whether state is safe."""
     chat_picks = sorted(
         parse_yahoo_draft_chat(text),
         key=lambda pick: pick.overall,
@@ -128,10 +134,14 @@ def _sync_yahoo_chat(
 
     if not chat_picks:
         print("No Yahoo draft selections found. Draft state unchanged.")
-        return
+        failure = load_draft_sync_failure(sync_status_path)
+        return failure is None or failure.draft_id != state.draft_id
 
     print()
     print("Synchronizing Yahoo draft chat:")
+
+    failure_message: str | None = None
+    failed_yahoo_pick: int | None = None
 
     for chat_pick in chat_picks:
         try:
@@ -146,6 +156,11 @@ def _sync_yahoo_chat(
             player = _prompt_for_ambiguous_player(error)
 
             if player is None:
+                failure_message = (
+                    f"Yahoo synchronization cancelled while resolving pick "
+                    f"#{error.chat_pick.overall}."
+                )
+                failed_yahoo_pick = error.chat_pick.overall
                 print("  Synchronization cancelled.")
                 print("  Remaining picks were not recorded.")
                 break
@@ -157,6 +172,8 @@ def _sync_yahoo_chat(
                     player=player,
                 )
             except ValueError as record_error:
+                failure_message = str(record_error)
+                failed_yahoo_pick = error.chat_pick.overall
                 print(f"  ERROR: {record_error}")
                 print("  Remaining picks were not recorded.")
                 break
@@ -175,6 +192,8 @@ def _sync_yahoo_chat(
             continue
 
         except (YahooDraftSyncError, ValueError) as error:
+            failure_message = str(error)
+            failed_yahoo_pick = chat_pick.overall
             print(f"  ERROR: {error}")
             print("  Remaining picks were not recorded.")
             break
@@ -201,6 +220,45 @@ def _sync_yahoo_chat(
 
     print()
     print(f"Current overall pick is now #{state.current_overall_pick}.")
+
+    if failure_message is not None and failed_yahoo_pick is not None:
+        mark_draft_state_stale(
+            sync_status_path,
+            state=state,
+            message=failure_message,
+            observed_yahoo_pick=failed_yahoo_pick,
+        )
+        print()
+        print("=" * 72)
+        print("DRAFT STATE MARKED STALE — RECOMMENDATIONS DISABLED")
+        print(
+            f"Local state is at pick #{state.current_overall_pick}; "
+            f"Yahoo evidence reached pick #{failed_yahoo_pick}."
+        )
+        print("Resolve the Yahoo synchronization failure before using draft analysis.")
+        print("=" * 72)
+        return False
+
+    recovered = clear_stale_state_after_successful_sync(
+        sync_status_path,
+        state,
+        synced_yahoo_picks={pick.overall for pick in chat_picks},
+    )
+    if not recovered:
+        failure = load_draft_sync_failure(sync_status_path)
+        assert failure is not None
+        print()
+        print("=" * 72)
+        print("DRAFT STATE STILL STALE — MORE YAHOO HISTORY IS REQUIRED")
+        print(
+            f"The prior failure observed Yahoo pick #{failure.observed_yahoo_pick}; "
+            f"local state is only at #{state.current_overall_pick}."
+        )
+        print("Copy a range that includes the unresolved picks and rerun synchronization.")
+        print("=" * 72)
+        return False
+
+    return True
 
 
 def _read_terminal_input(prompt: str) -> str:
@@ -242,13 +300,17 @@ def main() -> None:
             )
             return
 
-        _sync_yahoo_chat(
+        sync_succeeded = _sync_yahoo_chat(
             text=sys.stdin.read(),
             state=state,
             league=league,
             rankings=rankings,
             draft_state_path=paths.draft_state,
+            sync_status_path=paths.draft_sync_status,
         )
+
+        if not sync_succeeded:
+            raise SystemExit(1)
 
         return
 

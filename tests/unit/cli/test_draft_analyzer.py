@@ -130,6 +130,10 @@ def test_main_reports_waiting_draft_context_from_explicit_workspace(
 
     assert "Opponent lookahead:" in output
     assert "Position exposure before my next pick:" in output
+    assert "STATUS: WAITING — CURRENT #5 (T5)" in output
+    assert "NEXT USER PICK: #17 | 12 selections away" in output
+    assert "TOP PREP:" in output
+    assert "1. Top Running Back — RB, RB1 | Yahoo Rank #1" in output
 
 
 def test_main_reports_on_clock_turn_with_empty_lookahead_and_untiered_player(
@@ -209,6 +213,10 @@ def test_main_reports_on_clock_turn_with_empty_lookahead_and_untiered_player(
 
     assert "Position exposure if I wait until my following pick:" in output
     assert "Selection chances: 0" in output
+    assert "STATUS: ON CLOCK — PICK #10" in output
+    assert "NEXT USER PICK: #11 | 0 opponent selections before return" in output
+    assert "TOP SHORTLIST:" in output
+    assert "1. Untiered Player — TE, TE1 | Yahoo Rank #1" in output
 
 
 def test_main_stops_after_final_overall_pick(
@@ -246,3 +254,58 @@ def test_main_stops_after_final_overall_pick(
     assert "Deterministic shortlist:" not in output
     assert "Decision prep shortlist" not in output
     assert "#153" not in output
+    assert "STATUS: COMPLETE — 150/150 picks" in output
+
+
+def test_main_refuses_analysis_when_active_draft_is_marked_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """
+    GIVEN: a Yahoo synchronization failure marks the active draft state stale
+    WHEN: the analyzer CLI is invoked
+    THEN: it exits nonzero without printing recommendations from stale state
+    """
+    _write_workspace(
+        tmp_path,
+        state={
+            "draft_id": "mock-stale",
+            "session_type": "mock",
+            "my_draft_slot": 6,
+            "current_overall_pick": 7,
+            "picks": [],
+        },
+        ranking_rows=[
+            "1,1.5,Stale Candidate,RB,RB1,5,99%,10001,1",
+        ],
+    )
+    (tmp_path / "data" / "draft_sync_status.json").write_text(
+        json.dumps(
+            {
+                "draft_id": "mock-stale",
+                "message": (
+                    "Draft gap detected: local state expects pick #7, but Yahoo supplied pick #11."
+                ),
+                "local_current_overall_pick": 7,
+                "observed_yahoo_pick": 11,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ff-draft", "--workspace", str(tmp_path)],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+
+    output = capsys.readouterr().out
+    assert exit_info.value.code == 1
+    assert "DRAFT STATE STALE — RECOMMENDATIONS DISABLED" in output
+    assert "Local state is waiting at pick #7." in output
+    assert "Yahoo evidence reached at least pick #11." in output
+    assert "Stale Candidate" not in output
+    assert "Deterministic shortlist:" not in output

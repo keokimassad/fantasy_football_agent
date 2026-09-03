@@ -13,6 +13,7 @@ from fantasy_football_agent.draft.state import (
     load_league_config,
     validate_draft_state,
 )
+from fantasy_football_agent.draft.sync_status import require_fresh_draft_state
 
 
 def build_current_decision_packet(paths: ApplicationPaths) -> DraftDecisionPacket:
@@ -28,6 +29,7 @@ def build_current_decision_packet(paths: ApplicationPaths) -> DraftDecisionPacke
     league = load_league_config(paths.league_config)
     state = load_draft_state(paths.draft_state)
     validate_draft_state(state, league)
+    require_fresh_draft_state(paths.draft_sync_status, state)
 
     if is_draft_complete(state, league):
         return build_draft_decision_packet([], state, league)
