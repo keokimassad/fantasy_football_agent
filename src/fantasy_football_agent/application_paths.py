@@ -31,6 +31,11 @@ class ApplicationPaths:
         return self.workspace / "data" / "yahoo_rankings_2026.csv"
 
     @property
+    def player_overrides(self) -> Path:
+        """Return the optional local player-market override file."""
+        return self.workspace / "data" / "player_overrides.json"
+
+    @property
     def yahoo_oauth(self) -> Path:
         """Return the workspace's default Yahoo OAuth credential file."""
         return self.workspace / "oauth2.json"

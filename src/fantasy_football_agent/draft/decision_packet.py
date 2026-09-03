@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
 
-from .models import DraftState, LeagueConfig
+from .models import AdpPolicy, DraftState, LeagueConfig
 from .recommendations import (
     AvailabilityRisk,
     CandidateDesirability,
@@ -29,8 +29,16 @@ from .state import (
     team_for_overall_pick,
 )
 
-DEFAULT_AGENT_CANDIDATE_LIMIT = 15
-DECISION_PACKET_SCHEMA_VERSION = 1
+DEFAULT_DETERMINISTIC_ANCHOR_LIMIT = 5
+DEFAULT_ON_CLOCK_MARKET_HORIZON = 10
+DEFAULT_TURN_MARKET_HORIZON = 15
+DEFAULT_WAITING_MIN_CANDIDATE_LIMIT = 20
+DEFAULT_WAITING_TARGET_CANDIDATE_COUNT = 12
+DEFAULT_WAITING_UNCERTAINTY_BUFFER = 5
+DEFAULT_WAITING_MAX_CANDIDATE_LIMIT = 50
+ON_CLOCK_SKILL_POSITION_MINIMUMS = {"RB": 3, "WR": 3, "QB": 2, "TE": 2}
+WAITING_SKILL_POSITION_MAXIMUMS = {"RB": 9, "WR": 9, "QB": 5, "TE": 5}
+DECISION_PACKET_SCHEMA_VERSION = 2
 
 
 class DecisionPhase(StrEnum):
@@ -65,6 +73,7 @@ class DraftDecisionContext:
     decision_pick: int | None
     following_pick: int | None
     phase: DecisionPhase
+    consecutive_turn: bool
     total_draft_picks: int
     selections_before_decision: int
     opponent_selections_before_following_pick: int
@@ -90,6 +99,10 @@ class CandidateDecisionEvidence:
     bye: int
     rank: int
     adp: float | None
+    source_adp: float | None
+    adp_policy: AdpPolicy
+    adp_override_reason: str | None
+    adp_override_as_of: str | None
     drafted_percentage: float | None
     manual_tier: int | None
     market_pick_estimate: float
@@ -184,6 +197,11 @@ def _build_context(
         decision_pick=decision_pick,
         following_pick=following_pick,
         phase=phase,
+        consecutive_turn=(
+            decision_pick is not None
+            and following_pick is not None
+            and following_pick == decision_pick + 1
+        ),
         total_draft_picks=total_draft_picks,
         selections_before_decision=selections_before_decision,
         opponent_selections_before_following_pick=(opponent_selections_before_following_pick),
@@ -237,6 +255,10 @@ def _to_candidate_evidence(
         bye=player.bye,
         rank=player.rank,
         adp=player.adp,
+        source_adp=player.source_adp,
+        adp_policy=player.adp_policy,
+        adp_override_reason=player.adp_override_reason,
+        adp_override_as_of=player.adp_override_as_of,
         drafted_percentage=player.drafted_percentage,
         manual_tier=player.manual_tier,
         market_pick_estimate=evaluation.market_pick_estimate,
@@ -259,43 +281,208 @@ def _to_candidate_evidence(
     )
 
 
+def _get_market_horizon_limit(context: DraftDecisionContext) -> int:
+    """Return how far into current market order the AI candidate frontier should scan."""
+    if context.phase == DecisionPhase.WAITING:
+        dynamic_limit = (
+            context.selections_before_decision
+            + DEFAULT_WAITING_TARGET_CANDIDATE_COUNT
+            + DEFAULT_WAITING_UNCERTAINTY_BUFFER
+        )
+        return min(
+            DEFAULT_WAITING_MAX_CANDIDATE_LIMIT,
+            max(DEFAULT_WAITING_MIN_CANDIDATE_LIMIT, dynamic_limit),
+        )
+
+    if context.phase == DecisionPhase.ON_CLOCK and context.consecutive_turn:
+        return DEFAULT_TURN_MARKET_HORIZON
+
+    return DEFAULT_ON_CLOCK_MARKET_HORIZON
+
+
+def _market_order(
+    recommendations: list[CandidateRecommendation],
+) -> list[CandidateRecommendation]:
+    """Order candidates by effective current market timing for horizon selection."""
+    return sorted(
+        recommendations,
+        key=lambda recommendation: (
+            recommendation.evaluation.market_pick_estimate,
+            recommendation.evaluation.player.rank,
+        ),
+    )
+
+
+def _get_skill_position_minimums(context: DraftDecisionContext) -> dict[str, int]:
+    """Return skill-position breadth appropriate to the current decision phase."""
+    if context.phase != DecisionPhase.WAITING or context.selections_before_decision == 0:
+        return dict(ON_CLOCK_SKILL_POSITION_MINIMUMS)
+
+    wait_cycles = (context.selections_before_decision + context.teams - 1) // context.teams
+    return {
+        "RB": min(
+            WAITING_SKILL_POSITION_MAXIMUMS["RB"],
+            ON_CLOCK_SKILL_POSITION_MINIMUMS["RB"] + (2 * wait_cycles),
+        ),
+        "WR": min(
+            WAITING_SKILL_POSITION_MAXIMUMS["WR"],
+            ON_CLOCK_SKILL_POSITION_MINIMUMS["WR"] + (2 * wait_cycles),
+        ),
+        "QB": min(
+            WAITING_SKILL_POSITION_MAXIMUMS["QB"],
+            ON_CLOCK_SKILL_POSITION_MINIMUMS["QB"] + wait_cycles,
+        ),
+        "TE": min(
+            WAITING_SKILL_POSITION_MAXIMUMS["TE"],
+            ON_CLOCK_SKILL_POSITION_MINIMUMS["TE"] + wait_cycles,
+        ),
+    }
+
+
+def _add_position_minimums(
+    selected_ids: set[int],
+    recommendations: list[CandidateRecommendation],
+    context: DraftDecisionContext,
+) -> None:
+    """Ensure the AI can compare a minimum number of core skill-position options."""
+    ranked_recommendations = sorted(
+        recommendations,
+        key=lambda recommendation: recommendation.evaluation.player.rank,
+    )
+
+    for position, minimum in _get_skill_position_minimums(context).items():
+        selected_at_position = sum(
+            recommendation.evaluation.player.yahoo_player_id in selected_ids
+            and recommendation.evaluation.player.position == position
+            for recommendation in recommendations
+        )
+        if selected_at_position >= minimum:
+            continue
+
+        for recommendation in ranked_recommendations:
+            player = recommendation.evaluation.player
+            if player.position != position or player.yahoo_player_id in selected_ids:
+                continue
+
+            selected_ids.add(player.yahoo_player_id)
+            selected_at_position += 1
+            if selected_at_position >= minimum:
+                break
+
+
+def _add_relevant_specialists(
+    selected_ids: set[int],
+    recommendations: list[CandidateRecommendation],
+    context: DraftDecisionContext,
+) -> None:
+    """Guarantee one specialist only when deterministic evidence makes it relevant."""
+    for position in ("DEF", "K"):
+        if context.open_starter_slots.get(position, 0) <= 0:
+            continue
+
+        already_selected = any(
+            recommendation.evaluation.player.yahoo_player_id in selected_ids
+            and recommendation.evaluation.player.position == position
+            for recommendation in recommendations
+        )
+        if already_selected:
+            continue
+
+        candidate = next(
+            (
+                recommendation
+                for recommendation in recommendations
+                if recommendation.evaluation.player.position == position
+                and recommendation.desirability != CandidateDesirability.LOW
+            ),
+            None,
+        )
+        if candidate is not None:
+            selected_ids.add(candidate.evaluation.player.yahoo_player_id)
+
+
+def _select_phase_aware_candidates(
+    evaluations: list[CandidateEvaluation],
+    context: DraftDecisionContext,
+) -> list[CandidateRecommendation]:
+    """Select a phase-aware, positionally useful AI candidate frontier."""
+    if not evaluations:
+        return []
+
+    ordered = build_candidate_recommendations(
+        evaluations,
+        limit=len(evaluations),
+    )
+    selected_ids = {
+        recommendation.evaluation.player.yahoo_player_id
+        for recommendation in ordered[:DEFAULT_DETERMINISTIC_ANCHOR_LIMIT]
+    }
+    market_horizon = _get_market_horizon_limit(context)
+    selected_ids.update(
+        recommendation.evaluation.player.yahoo_player_id
+        for recommendation in _market_order(ordered)[:market_horizon]
+    )
+
+    _add_position_minimums(selected_ids, ordered, context)
+    _add_relevant_specialists(selected_ids, ordered, context)
+
+    return [
+        recommendation
+        for recommendation in ordered
+        if recommendation.evaluation.player.yahoo_player_id in selected_ids
+    ]
+
+
 def build_draft_decision_packet(
     evaluations: list[CandidateEvaluation],
     state: DraftState,
     league: LeagueConfig,
     *,
-    candidate_limit: int = DEFAULT_AGENT_CANDIDATE_LIMIT,
+    candidate_limit: int | None = None,
 ) -> DraftDecisionPacket:
-    """Build a broader structured decision packet for a future AI agent.
+    """Build a structured phase-aware decision packet for the AI reasoning layer.
 
-    The packet deliberately consumes deterministic candidate evaluations instead of
-    rankings, raw Yahoo text, or CLI output. This preserves the draft engine as the
-    source of truth while giving a downstream model more context than the five-name
-    human shortlist.
+    Default packet construction is intentionally phase-aware. ``WAITING`` scans far
+    enough beyond the intervening selections to expose plausible future targets, while
+    ``ON_CLOCK`` anchors on the deterministic fallback, scans a compact effective-market
+    horizon, and supplements underrepresented core skill positions. Consecutive turn
+    picks receive a broader market horizon so the model can optimize both selections.
+
+    An explicit ``candidate_limit`` remains available for deterministic tests and
+    diagnostics; when provided, it returns the first N ordered recommendations without
+    phase-aware supplementation.
 
     Args:
         evaluations: Deterministic candidate evidence from ``evaluate_candidates``.
         state: Current factual draft state.
         league: Current league and roster configuration.
-        candidate_limit: Maximum ordered candidates exposed to the downstream agent.
+        candidate_limit: Optional explicit ordered-candidate limit.
 
     Returns:
         A versioned, JSON-compatible decision packet.
 
     Raises:
-        ValueError: If ``candidate_limit`` is less than one.
+        ValueError: If an explicit ``candidate_limit`` is less than one.
     """
-    if candidate_limit < 1:
+    if candidate_limit is not None and candidate_limit < 1:
         raise ValueError("Decision packet candidate limit must be at least 1.")
 
-    recommendations = build_candidate_recommendations(
-        evaluations,
-        limit=candidate_limit,
-    )
+    context = _build_context(state, league)
+
+    if candidate_limit is None:
+        recommendations = _select_phase_aware_candidates(
+            evaluations,
+            context,
+        )
+    else:
+        recommendations = build_candidate_recommendations(
+            evaluations,
+            limit=candidate_limit,
+        )
 
     return DraftDecisionPacket(
         schema_version=DECISION_PACKET_SCHEMA_VERSION,
-        context=_build_context(state, league),
+        context=context,
         candidates=tuple(
             _to_candidate_evidence(recommendation) for recommendation in recommendations
         ),

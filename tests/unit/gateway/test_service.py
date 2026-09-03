@@ -110,3 +110,36 @@ def test_service_returns_completed_packet_after_final_pick(tmp_path: Path) -> No
     assert packet.context.phase == DecisionPhase.COMPLETE
     assert packet.context.decision_pick is None
     assert packet.candidates == ()
+
+
+def test_service_applies_local_adp_override_to_packet(tmp_path: Path) -> None:
+    """
+    GIVEN: a workspace with a player whose source ADP is explicitly invalidated
+    WHEN: the gateway builds the current packet
+    THEN: the AI boundary receives effective ADP rather than stale source-market evidence
+    """
+    _write_workspace(tmp_path)
+    (tmp_path / "data" / "player_overrides.json").write_text(
+        """{
+  "players": [
+    {
+      "yahoo_player_id": 30001,
+      "adp_policy": "IGNORE",
+      "reason": "Material news invalidated source ADP",
+      "as_of": "2026-08-31"
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    packet = build_current_decision_packet(ApplicationPaths(workspace=tmp_path))
+    candidate = next(
+        candidate for candidate in packet.candidates if candidate.yahoo_player_id == 30001
+    )
+
+    assert candidate.source_adp == 3.0
+    assert candidate.adp is None
+    assert candidate.adp_policy.value == "IGNORE"
+    assert candidate.market_pick_estimate == 1.0

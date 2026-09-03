@@ -149,7 +149,7 @@ def main() -> None:
 
         return
 
-    rankings = load_rankings(paths.rankings)
+    rankings = load_rankings(paths.rankings, paths.player_overrides)
 
     available = get_available_players(
         rankings,

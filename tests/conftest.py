@@ -5,6 +5,7 @@ from collections.abc import Callable
 import pytest
 
 from fantasy_football_agent.draft.models import (
+    AdpPolicy,
     DraftPick,
     DraftState,
     DraftStrategyConfig,
@@ -120,6 +121,10 @@ def make_player() -> Callable[..., Player]:
         drafted_percentage: float | None = 99.0,
         yahoo_player_id: int = 10001,
         manual_tier: int | None = 1,
+        source_adp: float | None = None,
+        adp_policy: AdpPolicy = AdpPolicy.VALID,
+        adp_override_reason: str | None = None,
+        adp_override_as_of: str | None = None,
     ) -> Player:
         return Player(
             rank=rank,
@@ -131,6 +136,10 @@ def make_player() -> Callable[..., Player]:
             drafted_percentage=drafted_percentage,
             yahoo_player_id=yahoo_player_id,
             manual_tier=manual_tier,
+            source_adp=source_adp,
+            adp_policy=adp_policy,
+            adp_override_reason=adp_override_reason,
+            adp_override_as_of=adp_override_as_of,
         )
 
     return make

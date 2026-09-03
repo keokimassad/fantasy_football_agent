@@ -3,6 +3,7 @@
 import csv
 from pathlib import Path
 
+from .market_overrides import apply_player_market_overrides, load_player_market_overrides
 from .models import DraftState, Player
 
 
@@ -33,7 +34,10 @@ def _parse_percentage(value: str) -> float | None:
     return float(value.rstrip("%"))
 
 
-def load_rankings(path: str | Path) -> list[Player]:
+def load_rankings(
+    path: str | Path,
+    overrides_path: str | Path | None = None,
+) -> list[Player]:
     """Load the draft rankings CSV into ordered player records.
 
     The loader preserves the ranking order in the file and normalizes optional Yahoo
@@ -43,9 +47,11 @@ def load_rankings(path: str | Path) -> list[Player]:
 
     Args:
         path: Rankings CSV to read.
+        overrides_path: Optional JSON file containing audited market-data overrides.
 
     Returns:
-        Players in the same order they appear in the rankings file.
+        Players in the same order they appear in the rankings file, with any
+        configured effective ADP policy applied.
     """
     path = Path(path)
 
@@ -69,7 +75,11 @@ def load_rankings(path: str | Path) -> list[Player]:
 
             players.append(player)
 
-        return players
+        if overrides_path is None:
+            return players
+
+        overrides = load_player_market_overrides(overrides_path)
+        return apply_player_market_overrides(players, overrides)
 
 
 def get_available_players(
