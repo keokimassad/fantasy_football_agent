@@ -572,14 +572,18 @@ Expected behavior:
 - conflicting overlap stops synchronization;
 - a missing-pick gap stops synchronization.
 
+Fatal Yahoo synchronization failures mark the active draft stale. While stale, both `ff-draft` and the decision gateway refuse recommendations until a later successful Yahoo sync catches up beyond the observed failure point.
+
 ## macOS Mock Helper
 
 ```bash
 ffmock() {
-  pbpaste | ff-draft-update --yahoo-chat --workspace .
-  ff-draft --workspace .
+  pbpaste | ff-draft-update --yahoo-chat --workspace . && \
+    ff-draft --workspace .
 }
 ```
+
+The `&&` prevents analysis from running after a failed synchronization. Successful analysis also repeats live pick status and the top three deterministic/prep candidates in a compact footer at the bottom of the report.
 
 Create the mock session only after Yahoo reveals the slot:
 

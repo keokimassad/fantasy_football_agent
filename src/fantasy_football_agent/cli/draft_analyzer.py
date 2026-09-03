@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fantasy_football_agent.application_paths import ApplicationPaths
 from fantasy_football_agent.draft.analysis import get_position_exposure
+from fantasy_football_agent.draft.models import DraftState
 from fantasy_football_agent.draft.rankings import (
     get_available_players,
     get_position_tier_summary,
@@ -31,6 +32,10 @@ from fantasy_football_agent.draft.state import (
     load_league_config,
     team_for_overall_pick,
     validate_draft_state,
+)
+from fantasy_football_agent.draft.sync_status import (
+    DraftStateStaleError,
+    require_fresh_draft_state,
 )
 
 
@@ -111,6 +116,66 @@ def _print_candidate_recommendations(
         )
 
 
+def _print_stale_state_error(error: DraftStateStaleError) -> None:
+    """Print a dominant failure banner when local draft state is known stale."""
+    failure = error.failure
+    print()
+    print("=" * 72)
+    print("DRAFT STATE STALE — RECOMMENDATIONS DISABLED")
+    print("=" * 72)
+    print(f"Reason: {failure.message}")
+    print(f"Local state is waiting at pick #{failure.local_current_overall_pick}.")
+    print(f"Yahoo evidence reached at least pick #{failure.observed_yahoo_pick}.")
+    print("Copy a Yahoo range containing the unresolved picks and rerun ffmock.")
+    print("=" * 72)
+
+
+def _print_status_footer(
+    *,
+    state: DraftState,
+    drafting_team: int,
+    target_pick: int | None,
+    active_picks: list[tuple[int, int]],
+    recommendations: list[CandidateRecommendation],
+) -> None:
+    """Repeat live status and the leading shortlist at the bottom of the report."""
+    is_on_clock = drafting_team == state.my_draft_slot
+
+    print()
+    print("-" * 72)
+
+    if is_on_clock:
+        print(f"STATUS: ON CLOCK — PICK #{state.current_overall_pick}")
+        if target_pick is None:
+            print("NEXT USER PICK: none — final user selection")
+        else:
+            print(
+                f"NEXT USER PICK: #{target_pick} | "
+                f"{len(active_picks)} opponent selections before return"
+            )
+        shortlist_label = "TOP SHORTLIST"
+    else:
+        print(f"STATUS: WAITING — CURRENT #{state.current_overall_pick} (T{drafting_team})")
+        if target_pick is None:
+            print("NEXT USER PICK: none — user selections complete")
+        else:
+            print(f"NEXT USER PICK: #{target_pick} | {len(active_picks)} selections away")
+        shortlist_label = "TOP PREP"
+
+    print(f"{shortlist_label}:")
+    if not recommendations:
+        print("  No available candidates")
+    else:
+        for index, recommendation in enumerate(recommendations[:3], start=1):
+            player = recommendation.evaluation.player
+            print(
+                f"  {index}. {player.name} — {player.position}, {player.team} "
+                f"| Yahoo Rank #{player.rank}"
+            )
+
+    print("-" * 72)
+
+
 def main() -> None:
     """Load the active workspace and print a deterministic draft analysis."""
     args = _parse_args()
@@ -121,6 +186,12 @@ def main() -> None:
     state = load_draft_state(paths.draft_state)
 
     validate_draft_state(state, league)
+
+    try:
+        require_fresh_draft_state(paths.draft_sync_status, state)
+    except DraftStateStaleError as error:
+        _print_stale_state_error(error)
+        raise SystemExit(1) from error
 
     print()
     print("=== Fantasy Draft Assistant ===")
@@ -147,6 +218,11 @@ def main() -> None:
             for pick in my_roster:
                 print(f"  {pick.position}: {pick.player} (Pick {pick.overall})")
 
+        print()
+        print("-" * 72)
+        total_picks = get_total_draft_picks(league)
+        print(f"STATUS: COMPLETE — {total_picks}/{total_picks} picks")
+        print("-" * 72)
         return
 
     rankings = load_rankings(paths.rankings, paths.player_overrides)
@@ -431,6 +507,14 @@ def main() -> None:
             f"| Selection chances: "
             f"{exposure.selection_chances}"
         )
+
+    _print_status_footer(
+        state=state,
+        drafting_team=drafting_team,
+        target_pick=target_pick,
+        active_picks=active_picks,
+        recommendations=recommendations,
+    )
 
 
 if __name__ == "__main__":

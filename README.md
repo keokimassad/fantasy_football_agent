@@ -25,6 +25,8 @@ The project is currently **AI-assisted mock-draft ready**: Yahoo mock drafts can
 - Supports manual pick entry and undo.
 - Isolates Yahoo OAuth/client code behind a dedicated integration boundary.
 - Exposes draft creation, synchronization/update, and analysis through command-line entry points.
+- Fails closed after known Yahoo synchronization errors so stale state cannot produce CLI or gateway recommendations.
+- Repeats live pick status and the leading deterministic/prep candidates in a compact terminal footer.
 - Builds a versioned, JSON-compatible `DraftDecisionPacket` with phase-aware AI candidate horizons.
 - Exposes the current packet through a bearer-authenticated, read-only FastAPI gateway.
 - Supports a private Custom GPT Action that refreshes deterministic state before current-draft decisions.

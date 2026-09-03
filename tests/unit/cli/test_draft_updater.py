@@ -588,16 +588,24 @@ class TestYahooChatUpdates:
             ],
         )
 
-        main()
+        with pytest.raises(SystemExit) as exit_info:
+            main()
 
         output = capsys.readouterr().out
         state = _load_saved_state(tmp_path)
         picks = state["picks"]
 
+        assert exit_info.value.code == 1
         assert isinstance(picks, list)
         assert [pick["player"] for pick in picks] == ["Player One"]
         assert state["current_overall_pick"] == 2
+        sync_status = json.loads(
+            (tmp_path / "data" / "draft_sync_status.json").read_text(encoding="utf-8")
+        )
+        assert sync_status["draft_id"] == "test-draft"
+        assert sync_status["observed_yahoo_pick"] == 2
         assert "Synchronization cancelled." in output
+        assert "DRAFT STATE MARKED STALE — RECOMMENDATIONS DISABLED" in output
         assert "Remaining picks were not recorded." in output
         assert "Player Three" not in output
 
@@ -703,18 +711,26 @@ class TestYahooChatUpdates:
             ],
         )
 
-        main()
+        with pytest.raises(SystemExit) as exit_info:
+            main()
 
         output = capsys.readouterr().out
         state = _load_saved_state(tmp_path)
         picks = state["picks"]
 
+        assert exit_info.value.code == 1
         assert isinstance(picks, list)
         assert [pick["player"] for pick in picks] == ["Player One"]
         assert state["current_overall_pick"] == 2
+        sync_status = json.loads(
+            (tmp_path / "data" / "draft_sync_status.json").read_text(encoding="utf-8")
+        )
+        assert sync_status["local_current_overall_pick"] == 2
+        assert sync_status["observed_yahoo_pick"] == 3
         assert "RECORDED #1 T1 Player One (RB)" in output
         assert "Draft gap detected" in output
         assert "Remaining picks were not recorded." in output
+        assert "DRAFT STATE MARKED STALE — RECOMMENDATIONS DISABLED" in output
         assert "Player Three" not in output
 
     def test_no_selections_leaves_state_unchanged(
@@ -759,6 +775,120 @@ class TestYahooChatUpdates:
 
         assert "No Yahoo draft selections found. Draft state unchanged." in output
         assert _load_saved_state(tmp_path) == original_state
+
+    def test_successful_yahoo_sync_clears_stale_marker_after_catching_up(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """
+        GIVEN: a prior failure observed Yahoo pick one while local state remained at pick one
+        WHEN: a later successful Yahoo sync records that observed pick
+        THEN: the stale marker clears because local state has advanced beyond known Yahoo evidence
+        """
+        _write_workspace(tmp_path)
+        (tmp_path / "data" / "draft_sync_status.json").write_text(
+            json.dumps(
+                {
+                    "draft_id": "test-draft",
+                    "message": "Earlier synchronization failed.",
+                    "local_current_overall_pick": 1,
+                    "observed_yahoo_pick": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                """
+                1
+                Chris
+                P. One
+                RB
+                TST
+                Bye 5
+                """
+            ),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ff-draft-update", "--yahoo-chat", "--workspace", str(tmp_path)],
+        )
+
+        main()
+
+        capsys.readouterr()
+        assert _load_saved_state(tmp_path)["current_overall_pick"] == 2
+        assert not (tmp_path / "data" / "draft_sync_status.json").exists()
+
+    def test_successful_but_old_overlap_does_not_clear_stale_marker(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """
+        GIVEN: a prior failure observed Yahoo pick three while local state is already at pick two
+        WHEN: a successful sync only verifies older pick one
+        THEN: the updater remains nonzero and preserves the stale marker
+        """
+        _write_workspace(tmp_path)
+        state = json.loads((tmp_path / "data" / "draft_state.json").read_text(encoding="utf-8"))
+        state["current_overall_pick"] = 2
+        state["picks"] = [
+            {
+                "overall": 1,
+                "round": 1,
+                "pick_in_round": 1,
+                "team_id": 1,
+                "player": "Player One",
+                "position": "RB",
+                "yahoo_player_id": 10001,
+            }
+        ]
+        (tmp_path / "data" / "draft_state.json").write_text(json.dumps(state), encoding="utf-8")
+        (tmp_path / "data" / "draft_sync_status.json").write_text(
+            json.dumps(
+                {
+                    "draft_id": "test-draft",
+                    "message": "Draft gap detected.",
+                    "local_current_overall_pick": 2,
+                    "observed_yahoo_pick": 3,
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                """
+                1
+                Chris
+                P. One
+                RB
+                TST
+                Bye 5
+                """
+            ),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ff-draft-update", "--yahoo-chat", "--workspace", str(tmp_path)],
+        )
+
+        with pytest.raises(SystemExit) as exit_info:
+            main()
+
+        output = capsys.readouterr().out
+        assert exit_info.value.code == 1
+        assert (tmp_path / "data" / "draft_sync_status.json").exists()
+        assert "DRAFT STATE STILL STALE — MORE YAHOO HISTORY IS REQUIRED" in output
 
     @pytest.mark.parametrize(
         "extra_args",

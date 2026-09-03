@@ -23,6 +23,7 @@ It contains the concise, always-on behavior contract:
 
 - call `getDraftDecision` before answering current-draft questions;
 - treat the deterministic packet as authoritative for factual draft state;
+- treat user timing claims such as `I'm up` as a request to refresh state, never as authority over the packet phase;
 - recommend only players present in the packet's candidate set;
 - follow `WAITING`, `ON_CLOCK`, consecutive-turn, and `COMPLETE` phase behavior;
 - use the phase-aware candidate frontier rather than assuming every visible candidate has the same survival profile;
