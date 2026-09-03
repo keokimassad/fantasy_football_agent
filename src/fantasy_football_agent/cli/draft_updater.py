@@ -232,7 +232,7 @@ def main() -> None:
 
     validate_draft_state(state, league)
 
-    rankings = load_rankings(paths.rankings)
+    rankings = load_rankings(paths.rankings, paths.player_overrides)
 
     if args.yahoo_chat:
         if args.undo or args.players:

@@ -1,7 +1,16 @@
 """Define the core data models shared by the fantasy draft engine."""
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
+
+
+class AdpPolicy(StrEnum):
+    """Describe whether source ADP is trusted for current draft decisions."""
+
+    VALID = "VALID"
+    IGNORE = "IGNORE"
+    OVERRIDE = "OVERRIDE"
 
 
 @dataclass(frozen=True)
@@ -103,6 +112,15 @@ class Player:
     drafted_percentage: float | None
     yahoo_player_id: int
     manual_tier: int | None
+    source_adp: float | None = None
+    adp_policy: AdpPolicy = AdpPolicy.VALID
+    adp_override_reason: str | None = None
+    adp_override_as_of: str | None = None
+
+    def __post_init__(self) -> None:
+        """Preserve the source ADP before any local market override is applied."""
+        if self.source_adp is None and self.adp is not None:
+            self.source_adp = self.adp
 
 
 @dataclass

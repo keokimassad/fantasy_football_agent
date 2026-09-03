@@ -13,6 +13,7 @@ The project is currently **AI-assisted mock-draft ready**: Yahoo mock drafts can
 - Loads ranked players and determines which players remain available.
 - Uses Yahoo Player ID as the preferred stable player identity.
 - Supports optional manual player tiers alongside Yahoo rank and ADP.
+- Applies audited local ADP `VALID` / `IGNORE` / `OVERRIDE` policy without mutating the Yahoo source snapshot.
 - Calculates tier depth, tier drops, scarcity flags, and tier coverage.
 - Builds active lookahead windows between the current pick and the user's next turn.
 - Estimates position exposure from opponents drafting inside that window.
@@ -24,7 +25,7 @@ The project is currently **AI-assisted mock-draft ready**: Yahoo mock drafts can
 - Supports manual pick entry and undo.
 - Isolates Yahoo OAuth/client code behind a dedicated integration boundary.
 - Exposes draft creation, synchronization/update, and analysis through command-line entry points.
-- Builds a versioned, JSON-compatible `DraftDecisionPacket` for downstream AI reasoning.
+- Builds a versioned, JSON-compatible `DraftDecisionPacket` with phase-aware AI candidate horizons.
 - Exposes the current packet through a bearer-authenticated, read-only FastAPI gateway.
 - Supports a private Custom GPT Action that refreshes deterministic state before current-draft decisions.
 
@@ -65,6 +66,7 @@ fantasy_football_agent/
 │   └── league.example.json
 ├── data/
 │   ├── draft_state.example.json
+│   ├── player_overrides.example.json
 │   └── yahoo_rankings.example.csv
 ├── docs/
 │   └── custom_gpt/
@@ -83,6 +85,7 @@ fantasy_football_agent/
 │       ├── draft/
 │       │   ├── analysis.py
 │       │   ├── decision_packet.py
+│       │   ├── market_overrides.py
 │       │   ├── models.py
 │       │   ├── rankings.py
 │       │   ├── session.py
@@ -126,6 +129,7 @@ Create local working copies of the example inputs:
 ```bash
 cp config/league.example.json config/league.json
 cp data/yahoo_rankings.example.csv data/yahoo_rankings_2026.csv
+cp data/player_overrides.example.json data/player_overrides_2026.json
 ```
 
 A draft-state file should normally be created with `ff-draft-new` rather than copied manually.
@@ -137,6 +141,20 @@ Rank,Position Rank,ADP,Player Name,Position,Team,Bye,% Drafted,Yahoo Player ID,Y
 ```
 
 `Yahoo Player ID` is the preferred stable identity when available. `Recommended Tier` is the current expert/analyst tier and is dated independently from the Yahoo market snapshot. `Manual - Tier` is the user's preserved position-relative tier and remains the deterministic tier input when populated. Compact Yahoo status/injury fields provide current risk context without embedding verbose notes or source URLs in the runtime file.
+
+### Local market-data overrides
+
+`data/player_overrides.json` is an optional local exception file for market data that became stale after the Yahoo/ADP snapshot was captured. The file is ignored by Git; `data/player_overrides.example.json` documents the schema and currently includes the Josh Jacobs ADP invalidation used for live-draft regression testing.
+
+Supported ADP policies are:
+
+```text
+VALID      use source ADP normally
+IGNORE     preserve source ADP for auditability but exclude it from current market calculations
+OVERRIDE   preserve source ADP and use an explicitly supplied replacement ADP
+```
+
+Each override is keyed by Yahoo Player ID and carries a reason and `as_of` date. `IGNORE` is preferred when material news invalidates historical ADP but there is no trustworthy replacement number. The deterministic packet exposes both effective `adp` and historical `source_adp` plus the override metadata so the AI can explain the distinction without resurrecting stale ADP as current evidence.
 
 ## Starting a Draft Session
 
@@ -265,6 +283,14 @@ The instructions are intentionally kept concise. Durable behavioral constraints 
 `instructions.md`; supporting background that does not need to be present in every prompt belongs in
 Knowledge documents.
 
+The decision packet uses different AI candidate frontiers by phase:
+
+- `WAITING` expands its effective-market horizon dynamically with the number of selections before the user's decision and deepens RB/WR/QB/TE representation across long snake gaps.
+- ordinary `ON_CLOCK` retains the deterministic top-five, adds a compact market horizon, and guarantees minimum RB/WR/QB/TE representation when those positions are available.
+- consecutive snake-turn picks use a broader market horizon and set `context.consecutive_turn=true` so the GPT can recommend the two-pick portfolio in one response.
+
+The deterministic CLI top-five is intentionally unchanged and remains the fast manual fallback.
+
 The Action boundary is read-only:
 
 ```text
@@ -324,7 +350,8 @@ Tests are written around meaningful behavior and boundaries, including:
 - Yahoo/local-state reconciliation;
 - ambiguity, overlap, gap, and conflict behavior;
 - CLI orchestration;
-- decision-packet serialization and phase behavior;
+- decision-packet serialization, phase-aware candidate horizons, and consecutive-turn behavior;
+- local ADP override parsing and stale-market-signal suppression;
 - gateway authentication/read-only API behavior; and
 - Yahoo OAuth behavior without live network calls.
 
@@ -343,15 +370,16 @@ If external ranking or league data is used, the user is responsible for ensuring
 The deterministic draft assistant is stable as the authoritative fallback, and the initial
 AI boundary is working end to end:
 
-- deterministic candidate evaluation produces the broader `DraftDecisionPacket`;
+- deterministic candidate evaluation produces a phase-aware `DraftDecisionPacket`;
+- waiting packets expand beyond long snake-turn gaps while on-clock packets remain compact and positionally broad;
+- consecutive turns expose a broader two-pick frontier through `context.consecutive_turn`;
+- local ADP policy can invalidate or replace stale source ADP without modifying the source ranking file;
 - a bearer-authenticated read-only FastAPI gateway exposes the current packet;
 - the gateway has been validated through a public HTTPS tunnel;
 - the private Custom GPT Action successfully retrieves live deterministic packets; and
 - `WAITING`, `ON_CLOCK`, and `COMPLETE` behaviors have been exercised through the Action path.
 
-Current mock work is focused on measuring where the AI reasoning layer adds value over the
-deterministic shortlist, improving return-window/opponent modeling, and preserving fast failure
-recovery under a live draft clock.
+Current mock work is focused on validating turn-pair latency, long-wait target quality, current market overrides, and preserving fast failure recovery under a live draft clock.
 
 ## Roadmap
 

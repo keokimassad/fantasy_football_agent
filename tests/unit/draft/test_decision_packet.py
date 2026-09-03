@@ -10,7 +10,13 @@ from fantasy_football_agent.draft.decision_packet import (
     DecisionPhase,
     build_draft_decision_packet,
 )
-from fantasy_football_agent.draft.models import DraftPick, DraftState, LeagueConfig, Player
+from fantasy_football_agent.draft.models import (
+    AdpPolicy,
+    DraftPick,
+    DraftState,
+    LeagueConfig,
+    Player,
+)
 from fantasy_football_agent.draft.recommendations import (
     RosterFit,
     evaluate_candidates,
@@ -27,8 +33,8 @@ def test_packet_contains_factual_context_and_broader_candidate_set(
 ) -> None:
     """
     GIVEN: an on-clock user with one drafted running back and twenty available players
-    WHEN: a decision packet is built with the default broader candidate limit
-    THEN: the packet exposes factual roster context and fifteen ordered candidates
+    WHEN: a decision packet is built with the default phase-aware candidate frontier
+    THEN: the packet exposes factual roster context and a compact current-decision set
     """
     state = make_draft_state(
         my_draft_slot=4,
@@ -62,11 +68,12 @@ def test_packet_contains_factual_context_and_broader_candidate_set(
     assert packet.context.decision_pick == 4
     assert packet.context.following_pick == 17
     assert packet.context.phase == DecisionPhase.ON_CLOCK
+    assert packet.context.consecutive_turn is False
     assert packet.context.roster[0].player == "Roster RB"
     assert packet.context.roster_position_counts == {"RB": 1}
     assert packet.context.open_starter_slots["RB"] == 1
     assert packet.context.open_starter_slots["WR"] == 2
-    assert len(packet.candidates) == 15
+    assert len(packet.candidates) == 10
 
 
 def test_packet_preserves_deterministic_candidate_evidence(
@@ -194,7 +201,7 @@ def test_packet_serializes_to_json_compatible_dictionary(
 
     serialized = json.dumps(packet.to_dict())
 
-    assert '"schema_version": 1' in serialized
+    assert '"schema_version": 2' in serialized
     assert '"Serializable Candidate"' in serialized
 
 
@@ -219,3 +226,265 @@ def test_packet_rejects_non_positive_candidate_limit(
             league_config,
             candidate_limit=0,
         )
+
+
+def test_waiting_packet_expands_beyond_intervening_selections(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: pick one is waiting eighteen selections for the next snake-turn decision
+    WHEN: the default decision packet is built
+    THEN: the AI can see well beyond the players likely to disappear before the turn
+    """
+    state = make_draft_state(
+        my_draft_slot=1,
+        current_overall_pick=62,
+    )
+    positions = ("RB", "WR", "QB", "TE")
+    players = [
+        make_player(
+            rank=rank,
+            adp=float(rank),
+            name=f"Waiting Candidate {rank}",
+            position=positions[(rank - 1) % len(positions)],
+            yahoo_player_id=24000 + rank,
+            manual_tier=1 + ((rank - 1) // 8),
+        )
+        for rank in range(1, 61)
+    ]
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+    )
+
+    assert packet.context.phase == DecisionPhase.WAITING
+    assert packet.context.decision_pick == 80
+    assert packet.context.selections_before_decision == 18
+    assert len(packet.candidates) == 35
+    assert len(packet.candidates) > packet.context.selections_before_decision
+
+
+def test_waiting_packet_expands_skill_position_depth_across_long_gap(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: an eighteen-pick wait whose global ordering is crowded by specialists
+    WHEN: the waiting packet is built
+    THEN: deeper RB, WR, QB, and TE target layers remain visible for the future turn
+    """
+    state = make_draft_state(my_draft_slot=1, current_overall_pick=62)
+    players = [
+        make_player(
+            rank=rank,
+            adp=float(rank),
+            name=f"Defense {rank}",
+            position="DEF",
+            yahoo_player_id=28000 + rank,
+            manual_tier=rank,
+        )
+        for rank in range(1, 26)
+    ]
+    rank = 26
+    for position, count in (("RB", 10), ("WR", 10), ("QB", 6), ("TE", 6)):
+        for index in range(count):
+            players.append(
+                make_player(
+                    rank=rank,
+                    adp=float(rank),
+                    name=f"{position} Waiting {index + 1}",
+                    position=position,
+                    yahoo_player_id=28000 + rank,
+                    manual_tier=index + 1,
+                )
+            )
+            rank += 1
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+    )
+    position_counts = {
+        position: sum(candidate.position == position for candidate in packet.candidates)
+        for position in ("RB", "WR", "QB", "TE")
+    }
+
+    assert packet.context.selections_before_decision == 18
+    assert position_counts["RB"] >= 7
+    assert position_counts["WR"] >= 7
+    assert position_counts["QB"] >= 4
+    assert position_counts["TE"] >= 4
+
+
+def test_consecutive_turn_packet_uses_broader_on_clock_frontier(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: the user is on the clock for the first selection of a consecutive snake turn
+    WHEN: the default packet is built
+    THEN: the context marks the turn and exposes a broader two-pick decision frontier
+    """
+    state = make_draft_state(
+        my_draft_slot=1,
+        current_overall_pick=80,
+    )
+    players = [
+        make_player(
+            rank=rank,
+            adp=float(rank),
+            name=f"Turn Candidate {rank}",
+            position="WR",
+            yahoo_player_id=25000 + rank,
+            manual_tier=1 + ((rank - 1) // 5),
+        )
+        for rank in range(1, 31)
+    ]
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+    )
+
+    assert packet.context.phase == DecisionPhase.ON_CLOCK
+    assert packet.context.decision_pick == 80
+    assert packet.context.following_pick == 81
+    assert packet.context.consecutive_turn is True
+    assert len(packet.candidates) == 15
+
+
+def test_on_clock_packet_guarantees_core_skill_position_breadth(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: specialist candidates dominate the deterministic global ordering
+    WHEN: an on-clock turn packet is built
+    THEN: RB, WR, QB, and TE alternatives remain visible to the AI reasoning layer
+    """
+    state = make_draft_state(
+        my_draft_slot=1,
+        current_overall_pick=80,
+    )
+    players = [
+        make_player(
+            rank=rank,
+            adp=float(rank),
+            name=f"Defense {rank}",
+            position="DEF",
+            yahoo_player_id=26000 + rank,
+            manual_tier=rank,
+        )
+        for rank in range(1, 19)
+    ]
+    rank = 19
+    for position, count in (("RB", 4), ("WR", 4), ("QB", 3), ("TE", 3)):
+        for index in range(count):
+            players.append(
+                make_player(
+                    rank=rank,
+                    adp=float(rank),
+                    name=f"{position} Candidate {index + 1}",
+                    position=position,
+                    yahoo_player_id=26000 + rank,
+                    manual_tier=index + 1,
+                )
+            )
+            rank += 1
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+    )
+    position_counts = {
+        position: sum(candidate.position == position for candidate in packet.candidates)
+        for position in ("RB", "WR", "QB", "TE")
+    }
+
+    assert position_counts == {"RB": 3, "WR": 3, "QB": 2, "TE": 2}
+    selected_names = {candidate.name for candidate in packet.candidates}
+    assert "RB Candidate 4" not in selected_names
+    assert "WR Candidate 4" not in selected_names
+    assert "QB Candidate 3" not in selected_names
+    assert "TE Candidate 3" not in selected_names
+
+
+def test_explicit_candidate_limit_preserves_fixed_diagnostic_boundary(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: callers need a fixed deterministic packet size for diagnostics
+    WHEN: an explicit candidate limit is supplied
+    THEN: phase-aware supplementation is bypassed and exactly that many are returned
+    """
+    state = make_draft_state(my_draft_slot=1, current_overall_pick=80)
+    players = [
+        make_player(
+            rank=rank,
+            adp=float(rank),
+            name=f"Candidate {rank}",
+            position="WR",
+            yahoo_player_id=27000 + rank,
+        )
+        for rank in range(1, 11)
+    ]
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+        candidate_limit=5,
+    )
+
+    assert len(packet.candidates) == 5
+
+
+def test_ignored_adp_does_not_create_stale_value_signals(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: a player's historical ADP has been invalidated by material current news
+    WHEN: the player is evaluated on the clock
+    THEN: the packet preserves the source ADP but excludes it from current market signals
+    """
+    state = make_draft_state(my_draft_slot=1, current_overall_pick=80)
+    player = make_player(
+        rank=108,
+        adp=None,
+        source_adp=35.0,
+        adp_policy=AdpPolicy.IGNORE,
+        adp_override_reason="Commissioner's Exempt List",
+        adp_override_as_of="2026-08-31",
+        name="Josh Jacobs",
+        position="RB",
+        yahoo_player_id=31856,
+        manual_tier=10,
+    )
+
+    candidate = build_draft_decision_packet(
+        evaluate_candidates([player], state, league_config),
+        state,
+        league_config,
+    ).candidates[0]
+
+    assert candidate.adp is None
+    assert candidate.source_adp == 35.0
+    assert candidate.adp_policy == AdpPolicy.IGNORE
+    assert candidate.market_pick_estimate == 108.0
+    assert candidate.adp_value_at_decision is None
+    assert "FALLEN_PAST_ADP" not in candidate.signals
+    assert "MARKET_EXPECTED_BEFORE_FOLLOWING_PICK" not in candidate.signals
