@@ -361,6 +361,81 @@ def test_consecutive_turn_packet_uses_broader_on_clock_frontier(
     assert len(packet.candidates) == 15
 
 
+@pytest.mark.parametrize(
+    ("filled_specialists", "expected_optional_capacity", "expected_required_positions"),
+    [
+        (("DEF",), 1, {"K": 2}),
+        ((), 0, {"K": 2, "DEF": 2}),
+    ],
+)
+def test_consecutive_endgame_packet_exposes_required_starter_options(
+    filled_specialists: tuple[str, ...],
+    expected_optional_capacity: int,
+    expected_required_positions: dict[str, int],
+    league_config: LeagueConfig,
+    make_draft_pick: Callable[..., DraftPick],
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: slot one has two consecutive picks left and optional depth is constrained
+    WHEN: the endgame decision packet is built
+    THEN: low-desirability options remain visible for every starter position that must be filled
+    """
+    user_overall_picks = [1, 20, 21, 40, 41, 60, 61, 80, 81, 100, 101, 120, 121]
+    roster_positions = ["QB", "RB", "RB", "WR", "WR", "TE", "RB", *filled_specialists]
+    roster_positions.extend(["WR"] * (len(user_overall_picks) - len(roster_positions)))
+    state = make_draft_state(
+        my_draft_slot=1,
+        current_overall_pick=140,
+        picks=[
+            make_draft_pick(overall=overall, team_id=1, position=position)
+            for overall, position in zip(
+                user_overall_picks,
+                roster_positions,
+                strict=True,
+            )
+        ],
+    )
+    players = [
+        make_player(
+            rank=rank,
+            adp=float(rank),
+            name=f"Depth Player {rank}",
+            position="WR" if rank % 2 else "RB",
+            yahoo_player_id=30000 + rank,
+            manual_tier=10,
+        )
+        for rank in range(1, 21)
+    ]
+    for index, position in enumerate(("K", "K", "DEF", "DEF"), start=1):
+        players.append(
+            make_player(
+                rank=190 + index,
+                adp=float(190 + index),
+                name=f"{position} Option {index}",
+                position=position,
+                yahoo_player_id=30200 + index,
+                manual_tier=index,
+            )
+        )
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+    )
+    positions_in_packet = [candidate.position for candidate in packet.candidates]
+
+    assert packet.context.phase == DecisionPhase.ON_CLOCK
+    assert packet.context.consecutive_turn is True
+    assert packet.context.remaining_user_selections == 2
+    assert packet.context.optional_draft_capacity == expected_optional_capacity
+    for position, expected_count in expected_required_positions.items():
+        assert packet.context.open_starter_slots[position] == 1
+        assert positions_in_packet.count(position) == expected_count
+
+
 def test_on_clock_packet_guarantees_core_skill_position_breadth(
     league_config: LeagueConfig,
     make_draft_state: Callable[..., DraftState],

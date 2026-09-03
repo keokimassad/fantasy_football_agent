@@ -26,6 +26,7 @@ It contains the concise, always-on behavior contract:
 - treat user timing claims such as `I'm up` as a request to refresh state, never as authority over the packet phase;
 - recommend only players present in the packet's candidate set;
 - follow `WAITING`, `ON_CLOCK`, consecutive-turn, and `COMPLETE` phase behavior;
+- preserve roster feasibility when `optional_draft_capacity` requires an open starter to be filled;
 - use the phase-aware candidate frontier rather than assuming every visible candidate has the same survival profile;
 - honor effective ADP policy and never resurrect ignored historical `source_adp` as current market evidence;
 - do not invent injuries, suspensions, player roles, availability, or opponent behavior;

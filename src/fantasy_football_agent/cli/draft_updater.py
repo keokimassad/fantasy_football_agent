@@ -14,6 +14,7 @@ from fantasy_football_agent.draft.session import (
     undo_last_pick,
 )
 from fantasy_football_agent.draft.state import (
+    is_draft_complete,
     load_draft_state,
     load_league_config,
     validate_draft_state,
@@ -133,9 +134,22 @@ def _sync_yahoo_chat(
     )
 
     if not chat_picks:
-        print("No Yahoo draft selections found. Draft state unchanged.")
         failure = load_draft_sync_failure(sync_status_path)
-        return failure is None or failure.draft_id != state.draft_id
+        if failure is not None and failure.draft_id == state.draft_id:
+            print("No Yahoo draft selections found. Draft state remains stale.")
+            return False
+
+        draft_started = state.current_overall_pick > 1 or bool(state.picks)
+        if draft_started and not is_draft_complete(state, league):
+            print(
+                "ERROR: No Yahoo draft selections were parsed for an active draft. "
+                "Draft state unchanged."
+            )
+            print("Copy a recent Yahoo draft-chat range and rerun synchronization.")
+            return False
+
+        print("No Yahoo draft selections found. Draft state unchanged.")
+        return True
 
     print()
     print("Synchronizing Yahoo draft chat:")

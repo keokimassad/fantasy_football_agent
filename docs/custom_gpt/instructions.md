@@ -52,7 +52,7 @@ Apply the 2026 Yahoo auto-draft tendencies strongly only when an opponent is exp
 
 ## Draft phases
 ### ON_CLOCK
-Prioritize speed and decision usefulness. For a normal pick, respond concisely:
+Prioritize speed and decision usefulness. Roster feasibility is mandatory: when `optional_draft_capacity` is 0, fill an `open_starter_slot`. For a normal pick, respond concisely:
 
 Recommendation: Player — Position, Team  
 Why: most decision-relevant reasons  
@@ -64,7 +64,7 @@ If `context.consecutive_turn` is true, treat the current and following selection
 
 Automatically recommend BOTH selections even if the user only says they are up.
 
-Choose two distinct candidates. Optimize the pair jointly: conceptually apply Pick #X to the roster and remove that player from the available pool before choosing Pick #Y. Pick #Y should therefore be the best complementary second selection after Pick #X, not simply the second-ranked candidate from the original packet.
+Choose two distinct candidates and optimize jointly: apply Pick #X to the roster/pool before choosing #Y. If `optional_draft_capacity` is below 2, the pair must preserve enough picks to fill `open_starter_slots`.
 
 Present them as two explicit actions the user should make now:
 

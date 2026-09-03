@@ -38,6 +38,7 @@ DEFAULT_WAITING_UNCERTAINTY_BUFFER = 5
 DEFAULT_WAITING_MAX_CANDIDATE_LIMIT = 50
 ON_CLOCK_SKILL_POSITION_MINIMUMS = {"RB": 3, "WR": 3, "QB": 2, "TE": 2}
 WAITING_SKILL_POSITION_MAXIMUMS = {"RB": 9, "WR": 9, "QB": 5, "TE": 5}
+REQUIRED_STARTER_POSITION_OPTION_COUNT = 2
 DECISION_PACKET_SCHEMA_VERSION = 2
 
 
@@ -401,6 +402,62 @@ def _add_relevant_specialists(
             selected_ids.add(candidate.evaluation.player.yahoo_player_id)
 
 
+def _get_joint_decision_selection_count(context: DraftDecisionContext) -> int:
+    """Return how many user selections the current packet is expected to optimize."""
+    if context.decision_pick is None:
+        return 0
+
+    return 2 if context.consecutive_turn else 1
+
+
+def _add_required_starter_candidates(
+    selected_ids: set[int],
+    recommendations: list[CandidateRecommendation],
+    context: DraftDecisionContext,
+) -> None:
+    """Expose required-slot options once optional depth can no longer fill the decision."""
+    joint_selections = _get_joint_decision_selection_count(context)
+    required_fills = min(
+        joint_selections,
+        max(joint_selections - max(context.optional_draft_capacity, 0), 0),
+    )
+    if required_fills == 0:
+        return
+
+    ranked_recommendations = sorted(
+        recommendations,
+        key=lambda recommendation: recommendation.evaluation.player.rank,
+    )
+
+    for slot, open_count in context.open_starter_slots.items():
+        if open_count <= 0:
+            continue
+
+        eligible_positions = set(context.flex_positions) if slot == "FLEX" else {slot}
+        target_count = max(
+            REQUIRED_STARTER_POSITION_OPTION_COUNT,
+            min(open_count, joint_selections),
+        )
+        selected_at_slot = sum(
+            recommendation.evaluation.player.yahoo_player_id in selected_ids
+            and recommendation.evaluation.player.position in eligible_positions
+            for recommendation in recommendations
+        )
+
+        if selected_at_slot >= target_count:
+            continue
+
+        for recommendation in ranked_recommendations:
+            player = recommendation.evaluation.player
+            if player.position not in eligible_positions or player.yahoo_player_id in selected_ids:
+                continue
+
+            selected_ids.add(player.yahoo_player_id)
+            selected_at_slot += 1
+            if selected_at_slot >= target_count:
+                break
+
+
 def _select_phase_aware_candidates(
     evaluations: list[CandidateEvaluation],
     context: DraftDecisionContext,
@@ -425,6 +482,7 @@ def _select_phase_aware_candidates(
 
     _add_position_minimums(selected_ids, ordered, context)
     _add_relevant_specialists(selected_ids, ordered, context)
+    _add_required_starter_candidates(selected_ids, ordered, context)
 
     return [
         recommendation
