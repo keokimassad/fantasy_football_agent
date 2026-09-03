@@ -819,6 +819,18 @@ class TestYahooChatUpdates:
         assert "Copy a recent Yahoo draft-chat range" in output
         assert _load_saved_state(tmp_path) == original_state
         assert not (tmp_path / "data" / "draft_sync_status.json").exists()
+        log_path = tmp_path / "data" / "draft_logs" / "test-draft.jsonl"
+        log_events = [json.loads(line) for line in log_path.read_text().splitlines()]
+        sync_attempt = next(
+            event for event in log_events if event["event_type"] == "yahoo_sync_attempt"
+        )
+        sync_result = next(
+            event for event in log_events if event["event_type"] == "yahoo_sync_result"
+        )
+        assert sync_attempt["raw_yahoo_text"] == "hello everyone"
+        assert sync_attempt["parsed_pick_count"] == 0
+        assert sync_result["success"] is False
+        assert sync_result["sync_failure"] is None
 
     def test_successful_yahoo_sync_clears_stale_marker_after_catching_up(
         self,

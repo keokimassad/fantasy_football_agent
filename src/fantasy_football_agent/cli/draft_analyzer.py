@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fantasy_football_agent.application_paths import ApplicationPaths
 from fantasy_football_agent.draft.analysis import get_position_exposure
+from fantasy_football_agent.draft.decision_packet import build_draft_decision_packet
 from fantasy_football_agent.draft.models import DraftState
 from fantasy_football_agent.draft.rankings import (
     get_available_players,
@@ -36,6 +37,10 @@ from fantasy_football_agent.draft.state import (
 from fantasy_football_agent.draft.sync_status import (
     DraftStateStaleError,
     require_fresh_draft_state,
+)
+from fantasy_football_agent.observability import (
+    record_decision_blocked,
+    record_decision_packet,
 )
 
 
@@ -190,6 +195,12 @@ def main() -> None:
     try:
         require_fresh_draft_state(paths.draft_sync_status, state)
     except DraftStateStaleError as error:
+        record_decision_blocked(
+            paths,
+            state,
+            source="cli",
+            reason=error.failure.message,
+        )
         _print_stale_state_error(error)
         raise SystemExit(1) from error
 
@@ -202,6 +213,8 @@ def main() -> None:
     print(f"Current overall pick: {state.current_overall_pick}")
 
     if is_draft_complete(state, league):
+        packet = build_draft_decision_packet([], state, league)
+        record_decision_packet(paths, state, packet, source="cli")
         print(f"Draft complete after #{get_total_draft_picks(league)}.")
 
         my_roster = get_team_roster(
@@ -237,6 +250,12 @@ def main() -> None:
         state,
         league,
     )
+    packet = build_draft_decision_packet(
+        candidate_evaluations,
+        state,
+        league,
+    )
+    record_decision_packet(paths, state, packet, source="cli")
 
     recommendations = build_candidate_recommendations(
         candidate_evaluations,

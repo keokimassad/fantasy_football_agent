@@ -97,6 +97,25 @@ def test_service_builds_current_packet_from_workspace(tmp_path: Path) -> None:
     ]
 
 
+def test_service_logs_exact_packet_when_called_for_gateway(tmp_path: Path) -> None:
+    """
+    GIVEN: a valid workspace used by the Custom GPT gateway
+    WHEN: the gateway service builds a logged decision packet
+    THEN: the local draft log records the exact packet with gateway provenance
+    """
+    _write_workspace(tmp_path)
+    paths = ApplicationPaths(workspace=tmp_path)
+
+    packet = build_current_decision_packet(paths, log_source="gateway")
+
+    log_path = paths.draft_logs / "gateway-mock.jsonl"
+    events = [json.loads(line) for line in log_path.read_text().splitlines()]
+    packet_event = next(event for event in events if event["event_type"] == "decision_packet")
+    assert packet_event["source"] == "gateway"
+    assert packet_event["packet"]["context"]["current_overall_pick"] == 4
+    assert packet_event["packet"]["candidates"][0]["name"] == packet.candidates[0].name
+
+
 def test_service_returns_completed_packet_after_final_pick(tmp_path: Path) -> None:
     """
     GIVEN: a valid workspace whose draft has advanced beyond pick one hundred fifty

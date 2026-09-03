@@ -36,6 +36,21 @@ class ApplicationPaths:
         return self.workspace / "data" / "draft_sync_status.json"
 
     @property
+    def draft_logs(self) -> Path:
+        """Return the local analysis-ready draft observability directory."""
+        return self.workspace / "data" / "draft_logs"
+
+    @property
+    def custom_gpt_instructions(self) -> Path:
+        """Return the version-controlled Custom GPT instructions file."""
+        return self.workspace / "docs" / "custom_gpt" / "instructions.md"
+
+    @property
+    def custom_gpt_knowledge(self) -> Path:
+        """Return the version-controlled Yahoo auto-draft knowledge file."""
+        return self.workspace / "docs" / "custom_gpt" / "yahoo_auto_draft_2026.md"
+
+    @property
     def player_overrides(self) -> Path:
         """Return the optional local player-market override file."""
         return self.workspace / "data" / "player_overrides_2026.json"

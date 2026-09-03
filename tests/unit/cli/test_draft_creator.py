@@ -104,6 +104,10 @@ class TestDraftCreatorCli:
         }
         assert "Created draft session:" in output
         assert "Draft slot: 4" in output
+        log_path = tmp_path / "data" / "draft_logs" / "mock-test-001.jsonl"
+        log_events = [json.loads(line) for line in log_path.read_text().splitlines()]
+        assert log_events[0]["event_type"] == "session_started"
+        assert log_events[0]["state"]["draft_id"] == "mock-test-001"
 
     def test_generates_id_when_missing(
         self,

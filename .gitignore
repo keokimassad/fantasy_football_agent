@@ -38,6 +38,7 @@ data/yahoo_rankings_2026.csv
 data/player_overrides_2026.json
 data/archive/
 data/raw/
+data/draft_logs/
 
 # Local project management
 PROJECT_BACKLOG_AND_HANDOFF.md

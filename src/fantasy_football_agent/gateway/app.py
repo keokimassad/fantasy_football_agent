@@ -190,7 +190,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     paths = ApplicationPaths(workspace=settings.workspace)
 
     app = create_app(
-        packet_provider=lambda: build_current_decision_packet(paths),
+        packet_provider=lambda: build_current_decision_packet(paths, log_source="gateway"),
         api_key=settings.api_key,
         public_url=settings.public_url,
     )
