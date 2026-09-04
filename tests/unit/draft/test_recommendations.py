@@ -1309,6 +1309,142 @@ class TestRecommendationOrdering:
         assert recommendations[1].return_risk == ReturnRisk.HIGH
 
 
+class TestLowDesirabilityTimingGuardrail:
+    """Ordering rules for candidates outside the normal market window."""
+
+    def test_return_risk_precedes_roster_utility_for_low_desirability(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: a safe LOW-desirability direct starter and a high-risk LOW-desirability depth player
+        WHEN: the on-clock shortlist is ordered
+        THEN: timing evidence outranks the empty-starter-slot advantage inside the LOW bucket
+        """
+        safe_direct_starter = make_player(
+            rank=100,
+            adp=100.0,
+            name="Safe Direct Starter",
+            position="TE",
+            yahoo_player_id=10100,
+        )
+        risky_depth = make_player(
+            rank=25,
+            adp=25.0,
+            name="Risky Depth Player",
+            position="WR",
+            yahoo_player_id=10025,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    safe_direct_starter,
+                    decision_pick=20,
+                    following_pick=30,
+                    roster_fit=RosterFit.DIRECT_STARTER,
+                ),
+                _evaluation(
+                    risky_depth,
+                    decision_pick=20,
+                    following_pick=30,
+                    roster_fit=RosterFit.DEPTH,
+                    position_depth_need=PositionDepthNeed.LOW,
+                ),
+            ]
+        )
+
+        assert all(
+            recommendation.desirability == CandidateDesirability.LOW
+            for recommendation in recommendations
+        )
+        assert recommendations[0].evaluation.player.name == "Risky Depth Player"
+        assert recommendations[0].return_risk == ReturnRisk.HIGH
+        assert recommendations[1].evaluation.player.name == "Safe Direct Starter"
+        assert recommendations[1].return_risk == ReturnRisk.LOW
+
+    def test_unknown_return_risk_is_not_treated_as_safe_to_wait(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: otherwise comparable LOW-desirability candidates with UNKNOWN and LOW return risk
+        WHEN: the on-clock shortlist is ordered
+        THEN: missing market evidence remains more cautious than affirmative evidence of low risk
+        """
+        unknown = make_player(
+            rank=90,
+            adp=None,
+            name="Unknown Timing",
+            position="TE",
+            yahoo_player_id=10090,
+        )
+        low = make_player(
+            rank=80,
+            adp=85.0,
+            name="Low Timing",
+            position="TE",
+            yahoo_player_id=10080,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(unknown, decision_pick=20, following_pick=30),
+                _evaluation(low, decision_pick=20, following_pick=30),
+            ]
+        )
+
+        assert recommendations[0].evaluation.player.name == "Unknown Timing"
+        assert recommendations[0].return_risk == ReturnRisk.UNKNOWN
+        assert recommendations[1].return_risk == ReturnRisk.LOW
+
+    def test_defense_surfaces_normally_when_market_window_supports_it(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: a defense whose market timing places it before the following pick
+        WHEN: recommendations are ordered
+        THEN: no position-specific suppression prevents the defense from surfacing
+        """
+        sought_after_defense = make_player(
+            rank=24,
+            adp=25.0,
+            name="Sought After Defense",
+            position="DEF",
+            yahoo_player_id=10024,
+        )
+        later_skill_player = make_player(
+            rank=60,
+            adp=65.0,
+            name="Later Skill Player",
+            position="WR",
+            yahoo_player_id=10060,
+        )
+
+        recommendations = build_candidate_recommendations(
+            [
+                _evaluation(
+                    later_skill_player,
+                    decision_pick=20,
+                    following_pick=30,
+                    roster_fit=RosterFit.DEPTH,
+                    position_depth_need=PositionDepthNeed.MEDIUM,
+                ),
+                _evaluation(
+                    sought_after_defense,
+                    decision_pick=20,
+                    following_pick=30,
+                    roster_fit=RosterFit.DIRECT_STARTER,
+                ),
+            ]
+        )
+
+        assert recommendations[0].evaluation.player.name == "Sought After Defense"
+        assert recommendations[0].desirability == CandidateDesirability.MEDIUM
+        assert recommendations[0].return_risk == ReturnRisk.HIGH
+
+
 class TestRecommendationApi:
     """Recommendation builder API behavior."""
 

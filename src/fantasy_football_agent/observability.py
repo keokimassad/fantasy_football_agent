@@ -7,7 +7,6 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -103,7 +102,7 @@ def _session_started_event(paths: ApplicationPaths, state: DraftState) -> dict[s
         "recorded_at": _utc_timestamp(),
         "event_type": "session_started",
         "draft_id": state.draft_id,
-        "state": asdict(state),
+        "state": state.to_dict(),
         "runtime": {
             "python": sys.version.split()[0],
             "git_commit": _run_git_command(paths.workspace, "rev-parse", "HEAD"),
@@ -175,7 +174,7 @@ def record_yahoo_sync_attempt(
         "current_overall_pick": state.current_overall_pick,
         "parsed_pick_count": parsed_pick_count,
         "raw_yahoo_text": raw_text,
-        "state_before": asdict(state),
+        "state_before": state.to_dict(),
     }
     return _append_event(paths, state, event)
 
@@ -197,7 +196,7 @@ def record_yahoo_sync_result(
         "attempt_event_id": attempt_event_id,
         "success": success,
         "current_overall_pick": state.current_overall_pick,
-        "state_after": asdict(state),
+        "state_after": state.to_dict(),
         "sync_failure": _read_json_if_present(paths.draft_sync_status),
     }
     _append_event(paths, state, event)
@@ -218,9 +217,9 @@ def record_state_change(
         "event_type": "state_change",
         "draft_id": state.draft_id,
         "action": action,
-        "pick": asdict(pick),
+        "pick": pick.to_dict(),
         "current_overall_pick": state.current_overall_pick,
-        "state_after": asdict(state),
+        "state_after": state.to_dict(),
     }
     _append_event(paths, state, event)
 
@@ -241,7 +240,7 @@ def record_decision_packet(
         "draft_id": state.draft_id,
         "source": source,
         "current_overall_pick": state.current_overall_pick,
-        "state": asdict(state),
+        "state": state.to_dict(),
         "sync_failure": _read_json_if_present(paths.draft_sync_status),
         "packet": packet.to_dict(),
     }
@@ -265,7 +264,7 @@ def record_decision_blocked(
         "source": source,
         "reason": reason,
         "current_overall_pick": state.current_overall_pick,
-        "state": asdict(state),
+        "state": state.to_dict(),
         "sync_failure": _read_json_if_present(paths.draft_sync_status),
     }
     _append_event(paths, state, event)

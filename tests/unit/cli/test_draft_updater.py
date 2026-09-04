@@ -107,6 +107,14 @@ def _add_ambiguous_robinsons(workspace: Path) -> None:
         )
 
 
+def _add_jake_bates(workspace: Path) -> None:
+    """Add Jake Bates so Yahoo typo handling has one plausible ranked identity."""
+    rankings_path = workspace / "data" / "yahoo_rankings_2026.csv"
+
+    with rankings_path.open("a", encoding="utf-8") as rankings:
+        rankings.write("231,138.2,Jake Bates,K,DET,6,52%,40835,2\n")
+
+
 class TestManualDraftUpdates:
     """Manual draft-update CLI workflows."""
 
@@ -387,6 +395,166 @@ class TestYahooChatUpdates:
         assert state["current_overall_pick"] == 3
         assert "RECORDED #1 T1 Player One (RB)" in output
         assert "RECORDED #2 T2 Player Two (WR)" in output
+
+    def test_plausible_typo_can_be_confirmed_as_ranked_player(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """
+        GIVEN: Yahoo reports J Bate and rankings contain Jake Bates
+        WHEN: the user confirms the ranked candidate
+        THEN: the known Yahoo identity is recorded and synchronization continues
+        """
+        _write_workspace(tmp_path)
+        _add_jake_bates(tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                """
+                1
+                Chris
+                J Bate
+                K
+                Det
+                Bye 6
+                """
+            ),
+        )
+        monkeypatch.setattr(
+            "fantasy_football_agent.cli.draft_updater._read_terminal_input",
+            lambda _prompt: "1",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ff-draft-update", "--yahoo-chat", "--workspace", str(tmp_path)],
+        )
+
+        main()
+
+        output = capsys.readouterr().out
+        state = _load_saved_state(tmp_path)
+        picks = state["picks"]
+
+        assert isinstance(picks, list)
+        assert picks[-1]["player"] == "Jake Bates"
+        assert picks[-1]["yahoo_player_id"] == 40835
+        assert "Possible Yahoo player typo at pick #1" in output
+        assert "[1] Jake Bates" in output
+        assert "RECORDED #1 T1 Jake Bates (K)" in output
+        assert "[UNRANKED]" not in output
+
+    def test_plausible_typo_can_be_explicitly_recorded_as_unranked(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """
+        GIVEN: Yahoo reports J. Bate and rankings contain a plausible Jake Bates match
+        WHEN: the user explicitly chooses the unranked identity
+        THEN: Yahoo's literal selection is persisted without inventing a player ID
+        """
+        _write_workspace(tmp_path)
+        _add_jake_bates(tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                """
+                1
+                Chris
+                J. Bate
+                K
+                Det
+                Bye 6
+                """
+            ),
+        )
+        monkeypatch.setattr(
+            "fantasy_football_agent.cli.draft_updater._read_terminal_input",
+            lambda _prompt: "u",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ff-draft-update", "--yahoo-chat", "--workspace", str(tmp_path)],
+        )
+
+        main()
+
+        output = capsys.readouterr().out
+        state = _load_saved_state(tmp_path)
+        picks = state["picks"]
+
+        assert isinstance(picks, list)
+        assert picks[-1]["player"] == "J. Bate"
+        assert picks[-1]["yahoo_player_id"] is None
+        assert picks[-1]["nfl_team"] == "DET"
+        assert "RECORDED #1 T1 J. Bate (K) [UNRANKED]" in output
+
+    def test_synchronizes_unranked_yahoo_player_without_marking_state_stale(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """
+        GIVEN: Yahoo supplies a valid current selection absent from ranked player data
+        WHEN: the updater runs in Yahoo-chat mode
+        THEN: the pick is persisted as unranked and synchronization remains usable
+        """
+        _write_workspace(tmp_path)
+
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                """
+                1
+                Chris
+                S. Shrader
+                S. Shrader
+                K
+                Ind
+                Bye 13
+                """
+            ),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "ff-draft-update",
+                "--yahoo-chat",
+                "--workspace",
+                str(tmp_path),
+            ],
+        )
+
+        main()
+
+        output = capsys.readouterr().out
+        state = _load_saved_state(tmp_path)
+        picks = state["picks"]
+
+        assert isinstance(picks, list)
+        assert picks[-1] == {
+            "overall": 1,
+            "round": 1,
+            "pick_in_round": 1,
+            "team_id": 1,
+            "player": "S. Shrader",
+            "position": "K",
+            "yahoo_player_id": None,
+            "nfl_team": "IND",
+        }
+        assert state["current_overall_pick"] == 2
+        assert "RECORDED #1 T1 S. Shrader (K) [UNRANKED]" in output
+        assert not (tmp_path / "data" / "draft_sync_status.json").exists()
 
     def test_overlap_verified_before_new_pick(
         self,

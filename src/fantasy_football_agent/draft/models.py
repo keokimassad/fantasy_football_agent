@@ -73,6 +73,24 @@ class DraftPick:
     player: str
     position: str
     yahoo_player_id: int | None = None
+    nfl_team: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize one pick while omitting optional source metadata when absent."""
+        data: dict[str, Any] = {
+            "overall": self.overall,
+            "round": self.round,
+            "pick_in_round": self.pick_in_round,
+            "team_id": self.team_id,
+            "player": self.player,
+            "position": self.position,
+            "yahoo_player_id": self.yahoo_player_id,
+        }
+
+        if self.nfl_team is not None:
+            data["nfl_team"] = self.nfl_team
+
+        return data
 
 
 @dataclass
@@ -97,6 +115,16 @@ class DraftState:
             current_overall_pick=data["current_overall_pick"],
             picks=picks,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize draft state using the stable persisted pick representation."""
+        return {
+            "draft_id": self.draft_id,
+            "session_type": self.session_type,
+            "my_draft_slot": self.my_draft_slot,
+            "current_overall_pick": self.current_overall_pick,
+            "picks": [pick.to_dict() for pick in self.picks],
+        }
 
 
 @dataclass

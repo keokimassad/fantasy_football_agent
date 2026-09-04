@@ -7,7 +7,9 @@ import pytest
 from fantasy_football_agent.draft.models import Player
 from fantasy_football_agent.yahoo.draft_chat import (
     AmbiguousYahooPlayerError,
+    PotentialYahooPlayerMatchError,
     YahooDraftChatPick,
+    YahooPlayerNotFoundError,
     parse_yahoo_draft_chat,
     resolve_yahoo_chat_player,
 )
@@ -340,6 +342,204 @@ class TestYahooPlayerResolution:
         )
 
         assert resolved is jeremiyah_love
+
+    def test_uses_team_to_disambiguate_same_position_abbreviation(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: two same-position players sharing one Yahoo abbreviation
+        WHEN: Yahoo supplies a team matching only one candidate
+        THEN: team metadata safely disambiguates the ranked identity
+        """
+        jordan_williams = make_player(
+            name="Jordan Williams",
+            position="WR",
+            team="IND",
+            yahoo_player_id=20011,
+        )
+        jalen_williams = make_player(
+            name="Jalen Williams",
+            position="WR",
+            team="SEA",
+            yahoo_player_id=20012,
+        )
+
+        chat_pick = YahooDraftChatPick(
+            overall=26,
+            drafter="Wyatt",
+            player_reference="J. Williams",
+            position="WR",
+            team="SEA",
+            bye=None,
+        )
+
+        resolved = resolve_yahoo_chat_player(
+            [jordan_williams, jalen_williams],
+            chat_pick,
+        )
+
+        assert resolved is jalen_williams
+
+    def test_does_not_require_team_match_for_unique_name_and_position(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: a unique name-and-position match with stale ranked NFL-team metadata
+        WHEN: Yahoo reports the player's current team
+        THEN: the unique ranked identity is retained instead of becoming unknown
+        """
+        player = make_player(
+            name="Spencer Example",
+            position="K",
+            team="NYG",
+            yahoo_player_id=20021,
+        )
+
+        chat_pick = YahooDraftChatPick(
+            overall=147,
+            drafter="Other",
+            player_reference="S. Example",
+            position="K",
+            team="IND",
+            bye=13,
+        )
+
+        resolved = resolve_yahoo_chat_player([player], chat_pick)
+
+        assert resolved is player
+
+    def test_reports_plausible_typo_for_manual_confirmation(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: Yahoo reports J. Bate while Jake Bates exists at the same position and team
+        WHEN: exact player resolution fails
+        THEN: the plausible typo is surfaced for manual confirmation instead of becoming unranked
+        """
+        bates = make_player(
+            rank=231,
+            adp=138.2,
+            name="Jake Bates",
+            position="K",
+            team="DET",
+            bye=6,
+            yahoo_player_id=40835,
+        )
+        chat_pick = YahooDraftChatPick(
+            overall=147,
+            drafter="Other",
+            player_reference="J. Bate",
+            position="K",
+            team="DET",
+            bye=6,
+        )
+
+        with pytest.raises(PotentialYahooPlayerMatchError) as error:
+            resolve_yahoo_chat_player([bates], chat_pick)
+
+        assert error.value.candidates == (bates,)
+
+    def test_same_team_and_initial_do_not_create_unrelated_potential_match(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: an unmatched Yahoo name shares position, first initial, and team with a ranked player
+        WHEN: their surnames are not plausibly related
+        THEN: team metadata alone does not manufacture a typo candidate
+        """
+        addison = make_player(
+            name="Jordan Addison",
+            position="WR",
+            team="MIN",
+            yahoo_player_id=20031,
+        )
+        chat_pick = YahooDraftChatPick(
+            overall=147,
+            drafter="Other",
+            player_reference="J. CompletelyDifferent",
+            position="WR",
+            team="MIN",
+            bye=None,
+        )
+
+        with pytest.raises(YahooPlayerNotFoundError):
+            resolve_yahoo_chat_player([addison], chat_pick)
+
+    def test_rejects_potential_typo_when_ranked_match_was_already_drafted(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: J. Bate plausibly refers to already-drafted Jake Bates
+        WHEN: the expected new Yahoo selection is resolved
+        THEN: duplicate protection blocks an unranked fallback
+        """
+        bates = make_player(
+            name="Jake Bates",
+            position="K",
+            team="DET",
+            bye=6,
+            yahoo_player_id=40835,
+        )
+        chat_pick = YahooDraftChatPick(
+            overall=148,
+            drafter="Other",
+            player_reference="J. Bate",
+            position="K",
+            team="DET",
+            bye=6,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=r"plausible ranked matches.*already been drafted",
+        ):
+            resolve_yahoo_chat_player(
+                [bates],
+                chat_pick,
+                excluded_yahoo_player_ids={bates.yahoo_player_id},
+            )
+
+    def test_true_unknown_player_has_no_plausible_ranked_identity(
+        self,
+        make_player: Callable[..., Player],
+    ) -> None:
+        """
+        GIVEN: S. Shrader is absent and no same-position ranked identity is plausibly related
+        WHEN: the Yahoo selection is resolved
+        THEN: resolution reports a true ranked-data miss eligible for unranked sync fallback
+        """
+        rankings = [
+            make_player(
+                name="Jake Bates",
+                position="K",
+                team="DET",
+                bye=6,
+                yahoo_player_id=40835,
+            ),
+            make_player(
+                name="Sam Santos",
+                position="K",
+                team="CHI",
+                bye=13,
+                yahoo_player_id=40836,
+            ),
+        ]
+        chat_pick = YahooDraftChatPick(
+            overall=147,
+            drafter="Other",
+            player_reference="S. Shrader",
+            position="K",
+            team="IND",
+            bye=13,
+        )
+
+        with pytest.raises(YahooPlayerNotFoundError):
+            resolve_yahoo_chat_player(rankings, chat_pick)
 
     def test_reports_true_ambiguity(
         self,
