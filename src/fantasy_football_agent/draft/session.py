@@ -1,7 +1,6 @@
 """Apply draft selections to in-memory state and persist session changes."""
 
 import json
-from dataclasses import asdict
 from difflib import get_close_matches
 from pathlib import Path
 
@@ -178,6 +177,80 @@ def record_resolved_current_pick(
     return draft_pick
 
 
+def record_unranked_current_pick(
+    state: DraftState,
+    league: LeagueConfig,
+    *,
+    player_reference: str,
+    position: str,
+    nfl_team: str | None,
+) -> DraftPick:
+    """Record a structurally valid Yahoo selection absent from ranked data.
+
+    The ranked-player universe is intentionally narrower than Yahoo's full draftable
+    player pool. A selection that is structurally valid but has no ranked identity must
+    still advance draft state so an irrelevant opponent pick cannot disable later
+    recommendations.
+
+    Args:
+        state: Draft state to mutate.
+        league: League configuration used to derive snake-draft metadata.
+        player_reference: Yahoo's displayed player reference, such as ``S. Shrader``.
+        position: Yahoo-reported fantasy position.
+        nfl_team: Yahoo-reported NFL team code when present.
+
+    Returns:
+        The unranked draft-pick record added to the state.
+
+    Raises:
+        ValueError: If the same unresolved Yahoo identity is already recorded.
+    """
+    normalized_reference = player_reference.strip().casefold()
+    normalized_position = position.strip().casefold()
+    normalized_team = None if nfl_team is None else nfl_team.strip().casefold()
+
+    already_drafted = any(
+        pick.yahoo_player_id is None
+        and pick.player.casefold() == normalized_reference
+        and pick.position.casefold() == normalized_position
+        and (
+            normalized_team is None
+            or pick.nfl_team is None
+            or pick.nfl_team.casefold() == normalized_team
+        )
+        for pick in state.picks
+    )
+
+    if already_drafted:
+        raise ValueError(f"{player_reference} ({position}) has already been drafted.")
+
+    overall_pick = state.current_overall_pick
+    round_number, pick_in_round = get_round_and_pick_in_round(
+        overall_pick,
+        league.teams,
+    )
+    team_id = team_for_overall_pick(
+        overall_pick,
+        league.teams,
+    )
+
+    draft_pick = DraftPick(
+        overall=overall_pick,
+        round=round_number,
+        pick_in_round=pick_in_round,
+        team_id=team_id,
+        player=player_reference.strip(),
+        position=position.upper(),
+        yahoo_player_id=None,
+        nfl_team=None if nfl_team is None else nfl_team.upper(),
+    )
+
+    state.picks.append(draft_pick)
+    state.current_overall_pick += 1
+
+    return draft_pick
+
+
 def save_draft_state(
     path: str | Path,
     state: DraftState,
@@ -195,7 +268,7 @@ def save_draft_state(
         encoding="utf-8",
     ) as file:
         json.dump(
-            asdict(state),
+            state.to_dict(),
             file,
             indent=2,
         )

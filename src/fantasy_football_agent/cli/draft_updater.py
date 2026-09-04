@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from enum import StrEnum
 from pathlib import Path
 
 from fantasy_football_agent.application_paths import ApplicationPaths
@@ -10,6 +11,7 @@ from fantasy_football_agent.draft.rankings import load_rankings
 from fantasy_football_agent.draft.session import (
     record_current_pick,
     record_resolved_current_pick,
+    record_unranked_current_pick,
     save_draft_state,
     undo_last_pick,
 )
@@ -31,12 +33,19 @@ from fantasy_football_agent.observability import (
 )
 from fantasy_football_agent.yahoo.draft_chat import (
     AmbiguousYahooPlayerError,
+    PotentialYahooPlayerMatchError,
     parse_yahoo_draft_chat,
 )
 from fantasy_football_agent.yahoo.draft_sync import (
     YahooDraftSyncError,
     reconcile_yahoo_chat_pick,
 )
+
+
+class _PotentialMatchChoice(StrEnum):
+    """Represent non-player choices for a plausible Yahoo identity match."""
+
+    RECORD_UNRANKED = "RECORD_UNRANKED"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -88,6 +97,19 @@ def _prompt_for_players() -> list[str]:
     return players
 
 
+def _print_ranked_identity_candidates(candidates: tuple[Player, ...]) -> None:
+    """Print ranked identity candidates in a consistent terminal format."""
+    for index, player in enumerate(candidates, start=1):
+        adp_display = f"{player.adp:.1f}" if player.adp is not None else "-"
+
+        print(
+            f"  [{index}] {player.name} "
+            f"| Rank #{player.rank} "
+            f"| {player.position} {player.team} "
+            f"| ADP {adp_display}"
+        )
+
+
 def _prompt_for_ambiguous_player(
     error: AmbiguousYahooPlayerError,
 ) -> Player | None:
@@ -98,21 +120,45 @@ def _prompt_for_ambiguous_player(
         f'"{error.chat_pick.player_reference}"'
     )
 
-    for index, player in enumerate(error.candidates, start=1):
-        adp_display = f"{player.adp:.1f}" if player.adp is not None else "-"
-
-        print(
-            f"  [{index}] {player.name} "
-            f"| Rank #{player.rank} "
-            f"| {player.position} {player.team} "
-            f"| ADP {adp_display}"
-        )
+    _print_ranked_identity_candidates(error.candidates)
 
     while True:
         choice = _read_terminal_input(f"Select player [1-{len(error.candidates)}] or q to cancel: ")
 
         if choice.casefold() == "q":
             return None
+
+        if choice.isdigit():
+            index = int(choice) - 1
+
+            if 0 <= index < len(error.candidates):
+                return error.candidates[index]
+
+        print("Invalid selection.")
+
+
+def _prompt_for_potential_player_match(
+    error: PotentialYahooPlayerMatchError,
+) -> Player | _PotentialMatchChoice | None:
+    """Prompt before treating a plausible typo as a distinct unranked player."""
+    print()
+    print(
+        f"Possible Yahoo player typo at pick #{error.chat_pick.overall}: "
+        f'"{error.chat_pick.player_reference}"'
+    )
+    _print_ranked_identity_candidates(error.candidates)
+    print(f'  [u] Record "{error.chat_pick.player_reference}" as an unranked Yahoo selection')
+
+    while True:
+        choice = _read_terminal_input(
+            f"Select player [1-{len(error.candidates)}], u for unranked, or q to cancel: "
+        )
+
+        if choice.casefold() == "q":
+            return None
+
+        if choice.casefold() == "u":
+            return _PotentialMatchChoice.RECORD_UNRANKED
 
         if choice.isdigit():
             index = int(choice) - 1
@@ -210,6 +256,55 @@ def _sync_yahoo_chat(
 
             continue
 
+        except PotentialYahooPlayerMatchError as error:
+            choice = _prompt_for_potential_player_match(error)
+
+            if choice is None:
+                failure_message = (
+                    f"Yahoo synchronization cancelled while resolving pick "
+                    f"#{error.chat_pick.overall}."
+                )
+                failed_yahoo_pick = error.chat_pick.overall
+                print("  Synchronization cancelled.")
+                print("  Remaining picks were not recorded.")
+                break
+
+            try:
+                if choice == _PotentialMatchChoice.RECORD_UNRANKED:
+                    recorded_pick = record_unranked_current_pick(
+                        state=state,
+                        league=league,
+                        player_reference=error.chat_pick.player_reference,
+                        position=error.chat_pick.position,
+                        nfl_team=error.chat_pick.team,
+                    )
+                else:
+                    recorded_pick = record_resolved_current_pick(
+                        state=state,
+                        league=league,
+                        player=choice,
+                    )
+            except ValueError as record_error:
+                failure_message = str(record_error)
+                failed_yahoo_pick = error.chat_pick.overall
+                print(f"  ERROR: {record_error}")
+                print("  Remaining picks were not recorded.")
+                break
+
+            save_draft_state(
+                draft_state_path,
+                state,
+            )
+
+            identity_note = " [UNRANKED]" if recorded_pick.yahoo_player_id is None else ""
+            print(
+                f"  RECORDED #{recorded_pick.overall} "
+                f"T{recorded_pick.team_id} "
+                f"{recorded_pick.player} ({recorded_pick.position}){identity_note}"
+            )
+
+            continue
+
         except (YahooDraftSyncError, ValueError) as error:
             failure_message = str(error)
             failed_yahoo_pick = chat_pick.overall
@@ -218,10 +313,11 @@ def _sync_yahoo_chat(
             break
 
         if result.action == "verified":
+            identity_note = " [UNRANKED]" if result.pick.yahoo_player_id is None else ""
             print(
                 f"  VERIFIED #{result.pick.overall} "
                 f"T{result.pick.team_id} "
-                f"{result.pick.player} ({result.pick.position})"
+                f"{result.pick.player} ({result.pick.position}){identity_note}"
             )
 
             continue
@@ -231,10 +327,11 @@ def _sync_yahoo_chat(
             state,
         )
 
+        identity_note = " [UNRANKED]" if result.pick.yahoo_player_id is None else ""
         print(
             f"  RECORDED #{result.pick.overall} "
             f"T{result.pick.team_id} "
-            f"{result.pick.player} ({result.pick.position})"
+            f"{result.pick.player} ({result.pick.position}){identity_note}"
         )
 
     print()

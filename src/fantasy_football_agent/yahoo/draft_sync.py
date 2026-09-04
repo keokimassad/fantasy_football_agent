@@ -9,12 +9,17 @@ from fantasy_football_agent.draft.models import (
     LeagueConfig,
     Player,
 )
-from fantasy_football_agent.draft.session import record_resolved_current_pick
+from fantasy_football_agent.draft.session import (
+    record_resolved_current_pick,
+    record_unranked_current_pick,
+)
 from fantasy_football_agent.draft.state import team_for_overall_pick
 
 from .draft_chat import (
     AmbiguousYahooPlayerError,
+    PotentialYahooPlayerMatchError,
     YahooDraftChatPick,
+    YahooPlayerNotFoundError,
     resolve_yahoo_chat_player,
 )
 
@@ -74,7 +79,7 @@ def _resolve_overlapping_pick(
             rankings,
             chat_pick,
         )
-    except AmbiguousYahooPlayerError as error:
+    except (AmbiguousYahooPlayerError, PotentialYahooPlayerMatchError) as error:
         matching_candidates = [
             candidate
             for candidate in error.candidates
@@ -88,6 +93,26 @@ def _resolve_overlapping_pick(
             f"Could not verify overlapping Yahoo pick "
             f"#{chat_pick.overall} against existing draft state."
         ) from error
+
+
+def _matches_unranked_recorded_player(
+    chat_pick: YahooDraftChatPick,
+    recorded_pick: DraftPick,
+) -> bool:
+    """Return whether Yahoo repeats the same previously unranked selection."""
+    if recorded_pick.yahoo_player_id is not None:
+        return False
+
+    if chat_pick.player_reference.casefold() != recorded_pick.player.casefold():
+        return False
+
+    if chat_pick.position.casefold() != recorded_pick.position.casefold():
+        return False
+
+    if chat_pick.team is None or recorded_pick.nfl_team is None:
+        return True
+
+    return chat_pick.team.casefold() == recorded_pick.nfl_team.casefold()
 
 
 def reconcile_yahoo_chat_pick(
@@ -112,10 +137,12 @@ def reconcile_yahoo_chat_pick(
         Whether the selection was verified or newly recorded.
 
     Raises:
-        AmbiguousYahooPlayerError: If a new selection still has multiple candidates.
+        AmbiguousYahooPlayerError: If a new exact selection still has multiple candidates.
+        PotentialYahooPlayerMatchError: If an unmatched selection has plausible ranked
+            typo candidates requiring manual confirmation.
         YahooDraftSyncError: If Yahoo history conflicts with local state or contains
             a gap.
-        ValueError: If the Yahoo player cannot be resolved.
+        ValueError: If the Yahoo player cannot be safely resolved or recorded.
     """
     _validate_user_pick(
         state,
@@ -144,6 +171,22 @@ def reconcile_yahoo_chat_pick(
                 "but that pick is missing from local draft state."
             )
 
+        if recorded_pick.yahoo_player_id is None:
+            if not _matches_unranked_recorded_player(
+                chat_pick,
+                recorded_pick,
+            ):
+                raise YahooDraftSyncError(
+                    f"Pick #{chat_pick.overall} conflicts with local state: "
+                    f'Yahoo reports "{chat_pick.player_reference}", but local state contains '
+                    f'"{recorded_pick.player}".'
+                )
+
+            return YahooDraftReconciliation(
+                action="verified",
+                pick=recorded_pick,
+            )
+
         player = _resolve_overlapping_pick(
             rankings,
             chat_pick,
@@ -167,17 +210,26 @@ def reconcile_yahoo_chat_pick(
 
     drafted_ids = {pick.yahoo_player_id for pick in state.picks if pick.yahoo_player_id is not None}
 
-    player = resolve_yahoo_chat_player(
-        rankings,
-        chat_pick,
-        excluded_yahoo_player_ids=drafted_ids,
-    )
-
-    recorded_pick = record_resolved_current_pick(
-        state=state,
-        league=league,
-        player=player,
-    )
+    try:
+        player = resolve_yahoo_chat_player(
+            rankings,
+            chat_pick,
+            excluded_yahoo_player_ids=drafted_ids,
+        )
+    except YahooPlayerNotFoundError:
+        recorded_pick = record_unranked_current_pick(
+            state=state,
+            league=league,
+            player_reference=chat_pick.player_reference,
+            position=chat_pick.position,
+            nfl_team=chat_pick.team,
+        )
+    else:
+        recorded_pick = record_resolved_current_pick(
+            state=state,
+            league=league,
+            player=player,
+        )
 
     return YahooDraftReconciliation(
         action="recorded",

@@ -82,6 +82,44 @@ class AmbiguousYahooPlayerError(ValueError):
         )
 
 
+class PotentialYahooPlayerMatchError(ValueError):
+    """Signal that an unmatched Yahoo reference has plausible ranked identities."""
+
+    def __init__(
+        self,
+        chat_pick: YahooDraftChatPick,
+        candidates: list[Player],
+    ) -> None:
+        """Initialize a potential-match error requiring human confirmation."""
+        self.chat_pick = chat_pick
+        self.candidates = tuple(candidates)
+
+        candidate_text = ", ".join(
+            f"{player.name} (Rank #{player.rank}, ADP {player.adp})" for player in candidates
+        )
+
+        super().__init__(
+            "Yahoo draft-chat player "
+            f'"{chat_pick.player_reference}" '
+            "has plausible ranked matches that require confirmation: "
+            f"{candidate_text}"
+        )
+
+
+class YahooPlayerNotFoundError(ValueError):
+    """Signal that no ranked player matches a structurally valid Yahoo selection."""
+
+    def __init__(self, chat_pick: YahooDraftChatPick) -> None:
+        """Initialize a no-ranked-identity error for one Yahoo selection."""
+        self.chat_pick = chat_pick
+
+        super().__init__(
+            "Could not resolve Yahoo draft-chat player "
+            f'"{chat_pick.player_reference}" '
+            f"({chat_pick.position}, {chat_pick.team})."
+        )
+
+
 def _normalize_line(raw_line: str) -> str:
     line = raw_line.replace("\u00a0", " ").strip()
 
@@ -214,6 +252,114 @@ def _find_name_matches(
     ]
 
 
+def _normalized_name_parts(name: str) -> tuple[str, str] | None:
+    """Return normalized first-name and surname components when both are present."""
+    parts = name.split(" ", maxsplit=1)
+    if len(parts) != 2:
+        return None
+
+    first, surname = parts
+    normalized_first = re.sub(r"[^a-z0-9]", "", first.casefold())
+    normalized_surname = re.sub(r"[^a-z0-9]", "", surname.casefold())
+
+    if not normalized_first or not normalized_surname:
+        return None
+
+    return normalized_first, normalized_surname
+
+
+def _is_one_edit_apart(left: str, right: str) -> bool:
+    """Return whether two normalized strings differ by exactly one basic edit."""
+    if left == right or abs(len(left) - len(right)) > 1:
+        return False
+
+    if len(left) == len(right):
+        differences = sum(
+            left_char != right_char for left_char, right_char in zip(left, right, strict=True)
+        )
+        return differences == 1
+
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    short_index = 0
+    long_index = 0
+    skipped = False
+
+    while short_index < len(shorter) and long_index < len(longer):
+        if shorter[short_index] == longer[long_index]:
+            short_index += 1
+            long_index += 1
+            continue
+
+        if skipped:
+            return False
+
+        skipped = True
+        long_index += 1
+
+    return True
+
+
+def _find_potential_name_matches(
+    candidates: list[Player],
+    chat_pick: YahooDraftChatPick,
+) -> list[Player]:
+    """Return narrowly plausible typo candidates without guessing identity.
+
+    Potential matches must share the reported fantasy position (the caller supplies
+    only same-position candidates) and first initial. A candidate is considered
+    plausible only when the surname is exact/one basic edit away. Yahoo's NFL-team
+    and bye-week metadata only order already-plausible matches; neither is strong enough
+    to create one by itself. These candidates require manual confirmation; this helper
+    never auto-resolves a player.
+    """
+    reference_parts = _normalized_name_parts(chat_pick.player_reference)
+    if reference_parts is None:
+        return []
+
+    reference_first, reference_surname = reference_parts
+    potential: list[Player] = []
+
+    for player in candidates:
+        player_parts = _normalized_name_parts(player.name)
+        if player_parts is None:
+            continue
+
+        player_first, player_surname = player_parts
+        if reference_first[0] != player_first[0]:
+            continue
+
+        surname_is_near = reference_surname == player_surname or _is_one_edit_apart(
+            reference_surname, player_surname
+        )
+        if not surname_is_near:
+            continue
+
+        potential.append(player)
+
+    def evidence_order(player: Player) -> tuple[int, int, int, int]:
+        player_parts = _normalized_name_parts(player.name)
+        if player_parts is None:
+            return (1, 1, 1, player.rank)
+
+        _, player_surname = player_parts
+        surname_matches = reference_surname == player_surname or _is_one_edit_apart(
+            reference_surname, player_surname
+        )
+        team_matches = (
+            chat_pick.team is not None and player.team.casefold() == chat_pick.team.casefold()
+        )
+        bye_matches = chat_pick.bye is not None and player.bye == chat_pick.bye
+
+        return (
+            0 if surname_matches else 1,
+            0 if team_matches else 1,
+            0 if bye_matches else 1,
+            player.rank,
+        )
+
+    return sorted(potential, key=evidence_order)
+
+
 def _find_defense_matches(
     candidates: list[Player],
     player_reference: str,
@@ -306,34 +452,51 @@ def resolve_yahoo_chat_player(
         The uniquely matching ranked player.
 
     Raises:
-        AmbiguousYahooPlayerError: If multiple eligible ranked players remain.
-        ValueError: If no eligible ranked player can be resolved.
+        AmbiguousYahooPlayerError: If multiple exact eligible ranked players remain.
+        PotentialYahooPlayerMatchError: If only plausible typo candidates remain.
+        YahooPlayerNotFoundError: If no exact or plausible ranked player can be resolved.
+        ValueError: If matching or plausible ranked identities were already drafted.
     """
-    candidates = [
+    position_candidates = [
         player for player in rankings if player.position.casefold() == chat_pick.position.casefold()
     ]
 
-    if chat_pick.team is not None:
-        candidates = [
-            player for player in candidates if player.team.casefold() == chat_pick.team.casefold()
-        ]
-
-    if chat_pick.bye is not None:
-        bye_matches = [player for player in candidates if player.bye == chat_pick.bye]
-
-        if bye_matches:
-            candidates = bye_matches
-
     if chat_pick.position.casefold() == "def":
         name_matches = _find_defense_matches(
-            candidates,
+            position_candidates,
             chat_pick.player_reference,
         )
     else:
         name_matches = _find_name_matches(
-            candidates,
+            position_candidates,
             chat_pick.player_reference,
         )
+
+    if not name_matches:
+        potential_matches = _find_potential_name_matches(
+            position_candidates,
+            chat_pick,
+        )
+        eligible_potential_matches = [
+            player
+            for player in potential_matches
+            if player.yahoo_player_id not in excluded_yahoo_player_ids
+        ]
+
+        if eligible_potential_matches:
+            raise PotentialYahooPlayerMatchError(
+                chat_pick,
+                eligible_potential_matches,
+            )
+
+        if potential_matches:
+            raise ValueError(
+                "All plausible ranked matches for Yahoo draft-chat player "
+                f'"{chat_pick.player_reference}" '
+                "have already been drafted."
+            )
+
+        raise YahooPlayerNotFoundError(chat_pick)
 
     eligible_matches = [
         player for player in name_matches if player.yahoo_player_id not in excluded_yahoo_player_ids
@@ -342,21 +505,36 @@ def resolve_yahoo_chat_player(
     if len(eligible_matches) == 1:
         return eligible_matches[0]
 
-    if len(eligible_matches) > 1:
-        raise AmbiguousYahooPlayerError(
-            chat_pick,
-            eligible_matches,
-        )
-
-    if name_matches:
+    if not eligible_matches:
         raise ValueError(
             "All players matching Yahoo draft-chat player "
             f'"{chat_pick.player_reference}" '
             "have already been drafted."
         )
 
-    raise ValueError(
-        "Could not resolve Yahoo draft-chat player "
-        f'"{chat_pick.player_reference}" '
-        f"({chat_pick.position}, {chat_pick.team})."
+    candidates = eligible_matches
+
+    if chat_pick.team is not None:
+        team_matches = [
+            player for player in candidates if player.team.casefold() == chat_pick.team.casefold()
+        ]
+
+        if team_matches:
+            candidates = team_matches
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if chat_pick.bye is not None:
+        bye_matches = [player for player in candidates if player.bye == chat_pick.bye]
+
+        if bye_matches:
+            candidates = bye_matches
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    raise AmbiguousYahooPlayerError(
+        chat_pick,
+        candidates,
     )

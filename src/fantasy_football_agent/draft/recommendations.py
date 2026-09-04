@@ -507,22 +507,8 @@ def _recommendation_compare(
             _POSITION_DEPTH_NEED_ORDER[right_evaluation.position_depth_need],
         )
     else:
-        left_prefix = (
-            _DESIRABILITY_ORDER[left.desirability],
-            _ROSTER_UTILITY_ORDER[left.roster_utility],
-            _PRIORITY_ORDER[left.priority],
-            _LOSS_COST_ORDER[left.loss_cost],
-            _POSITION_DEPTH_NEED_ORDER[left_evaluation.position_depth_need],
-            _RETURN_RISK_ORDER[left.return_risk],
-        )
-        right_prefix = (
-            _DESIRABILITY_ORDER[right.desirability],
-            _ROSTER_UTILITY_ORDER[right.roster_utility],
-            _PRIORITY_ORDER[right.priority],
-            _LOSS_COST_ORDER[right.loss_cost],
-            _POSITION_DEPTH_NEED_ORDER[right_evaluation.position_depth_need],
-            _RETURN_RISK_ORDER[right.return_risk],
-        )
+        left_prefix = _on_clock_sort_prefix(left)
+        right_prefix = _on_clock_sort_prefix(right)
 
     prefix_comparison = _compare_ordered_values(left_prefix, right_prefix)
     if prefix_comparison:
@@ -547,6 +533,39 @@ def _recommendation_compare(
         right_evaluation.player.rank,
     )
     return _compare_ordered_values(left_market, right_market)
+
+
+def _on_clock_sort_prefix(
+    recommendation: CandidateRecommendation,
+) -> tuple[int, ...]:
+    """Return the phase-aware on-clock ordering prefix for one candidate.
+
+    HIGH and MEDIUM desirability already establish that a player belongs in the
+    current market window, so roster utility and replacement cost can lead the
+    within-window comparison. LOW desirability means market timing has not yet
+    justified the selection; return risk therefore becomes the first secondary
+    signal before roster fit or scarcity can manufacture urgency.
+    """
+    evaluation = recommendation.evaluation
+
+    if recommendation.desirability == CandidateDesirability.LOW:
+        return (
+            _DESIRABILITY_ORDER[recommendation.desirability],
+            _RETURN_RISK_ORDER[recommendation.return_risk],
+            _ROSTER_UTILITY_ORDER[recommendation.roster_utility],
+            _PRIORITY_ORDER[recommendation.priority],
+            _LOSS_COST_ORDER[recommendation.loss_cost],
+            _POSITION_DEPTH_NEED_ORDER[evaluation.position_depth_need],
+        )
+
+    return (
+        _DESIRABILITY_ORDER[recommendation.desirability],
+        _ROSTER_UTILITY_ORDER[recommendation.roster_utility],
+        _PRIORITY_ORDER[recommendation.priority],
+        _LOSS_COST_ORDER[recommendation.loss_cost],
+        _POSITION_DEPTH_NEED_ORDER[evaluation.position_depth_need],
+        _RETURN_RISK_ORDER[recommendation.return_risk],
+    )
 
 
 _PRIORITY_ORDER = {
@@ -764,9 +783,10 @@ def build_candidate_recommendations(
     """Build an explainable phase-aware deterministic shortlist.
 
     Candidate desirability provides a cross-position guardrail using transparent
-    Yahoo Rank/ADP market consensus plus roster utility. Within the plausible
-    draft window, loss cost, same-position tier quality, and return risk continue
-    to express decision urgency without turning manual tiers into a universal score.
+    Yahoo Rank/ADP market consensus plus roster utility. Within a plausible market
+    window, roster utility and replacement cost lead the comparison. For LOW
+    desirability candidates, return risk leads the secondary ordering so an empty
+    starter slot or tier cliff cannot manufacture early urgency without timing evidence.
 
     Args:
         evaluations: Candidate facts produced by ``evaluate_candidates``.
