@@ -13,26 +13,65 @@ class AdpPolicy(StrEnum):
     OVERRIDE = "OVERRIDE"
 
 
+class PreferenceStrength(StrEnum):
+    """Describe how strongly the user wants a soft draft preference applied."""
+
+    LIGHT = "LIGHT"
+    MODERATE = "MODERATE"
+    STRONG = "STRONG"
+
+
+@dataclass(frozen=True)
+class DraftPreference:
+    """Represent one reusable user strategy preference for the reasoning layer."""
+
+    name: str
+    strength: PreferenceStrength
+    guidance: str
+    exception: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DraftPreference":
+        """Build one soft preference from JSON-compatible input."""
+        exception = data.get("exception")
+        return cls(
+            name=str(data["name"]),
+            strength=PreferenceStrength(str(data["strength"]).upper()),
+            guidance=str(data["guidance"]),
+            exception=None if exception is None else str(exception),
+        )
+
+
 @dataclass(frozen=True)
 class DraftStrategyConfig:
-    """Represent user-controlled roster-construction targets.
+    """Represent user-controlled draft strategy loaded separately from league rules.
 
     A position roster target indicates the roster count below which additional
     players at that position receive extra roster-construction consideration.
     Reaching the target does not prevent drafting additional players at that
-    position.
+    position. Saved preferences are soft reasoning-layer guidance and do not
+    directly reorder the deterministic baseline.
     """
 
     position_roster_targets: dict[str, int]
+    preferences: tuple[DraftPreference, ...] = ()
+    strategy_name: str = "default"
+    as_of: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DraftStrategyConfig":
         """Build draft-strategy settings from JSON-compatible input."""
+        as_of = data.get("as_of")
         return cls(
             position_roster_targets={
                 str(position).upper(): int(target)
                 for position, target in data["position_roster_targets"].items()
-            }
+            },
+            preferences=tuple(
+                DraftPreference.from_dict(preference) for preference in data.get("preferences", [])
+            ),
+            strategy_name=str(data.get("strategy_name", "default")),
+            as_of=None if as_of is None else str(as_of),
         )
 
 
@@ -49,8 +88,16 @@ class LeagueConfig:
     draft_strategy: DraftStrategyConfig
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "LeagueConfig":
-        """Build a league configuration from its JSON-compatible dictionary form."""
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        draft_strategy: DraftStrategyConfig | None = None,
+    ) -> "LeagueConfig":
+        """Build league rules and compose separately loaded draft strategy when supplied."""
+        if draft_strategy is None:
+            draft_strategy = DraftStrategyConfig.from_dict(data["draft_strategy"])
+
         return cls(
             league_name=data["league_name"],
             teams=data["teams"],
@@ -58,7 +105,7 @@ class LeagueConfig:
             roster=data["roster"],
             flex_positions=data["flex_positions"],
             scoring=data["scoring"],
-            draft_strategy=DraftStrategyConfig.from_dict(data["draft_strategy"]),
+            draft_strategy=draft_strategy,
         )
 
 

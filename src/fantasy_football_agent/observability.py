@@ -111,6 +111,7 @@ def _session_started_event(paths: ApplicationPaths, state: DraftState) -> dict[s
         },
         "sources": {
             "league_config": _source_snapshot(paths.league_config, paths.workspace),
+            "draft_strategy": _source_snapshot(paths.draft_strategy, paths.workspace),
             "rankings": _source_snapshot(paths.rankings, paths.workspace),
             "player_overrides": _source_snapshot(paths.player_overrides, paths.workspace),
             "custom_gpt_instructions": _source_snapshot(

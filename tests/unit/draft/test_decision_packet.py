@@ -13,9 +13,12 @@ from fantasy_football_agent.draft.decision_packet import (
 from fantasy_football_agent.draft.models import (
     AdpPolicy,
     DraftPick,
+    DraftPreference,
     DraftState,
+    DraftStrategyConfig,
     LeagueConfig,
     Player,
+    PreferenceStrength,
 )
 from fantasy_football_agent.draft.recommendations import (
     RosterFit,
@@ -66,7 +69,9 @@ def test_packet_contains_factual_context_and_broader_candidate_set(
     assert packet.schema_version == DECISION_PACKET_SCHEMA_VERSION
     assert packet.context.current_drafting_team == 4
     assert packet.context.decision_pick == 4
+    assert packet.context.decision_round == 1
     assert packet.context.following_pick == 17
+    assert packet.context.following_round == 2
     assert packet.context.phase == DecisionPhase.ON_CLOCK
     assert packet.context.consecutive_turn is False
     assert packet.context.roster[0].player == "Roster RB"
@@ -106,6 +111,7 @@ def test_packet_preserves_deterministic_candidate_evidence(
         league_config,
     ).candidates[0]
 
+    assert candidate.baseline_rank == 1
     assert candidate.name == "Tiered Receiver"
     assert candidate.manual_tier == 3
     assert candidate.market_pick_estimate == 9.0
@@ -113,6 +119,59 @@ def test_packet_preserves_deterministic_candidate_evidence(
     assert candidate.tier_remaining == 1
     assert candidate.position_tier_gap == 0
     assert "FILLS_DIRECT_STARTER" in candidate.signals
+
+
+def test_packet_exposes_saved_preferences_without_changing_baseline_order(
+    league_config: LeagueConfig,
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: saved user preferences plus two deterministically ordered candidates
+    WHEN: a decision packet is built
+    THEN: preferences are exposed as context while baseline candidate ranks stay intact
+    """
+    league_config.draft_strategy = DraftStrategyConfig(
+        position_roster_targets=league_config.draft_strategy.position_roster_targets,
+        preferences=(
+            DraftPreference(
+                name="wait_qb",
+                strength=PreferenceStrength.MODERATE,
+                guidance="Prefer to wait on premium quarterbacks.",
+                exception="Take one for exceptional value.",
+            ),
+        ),
+    )
+    state = make_draft_state(my_draft_slot=4, current_overall_pick=4)
+    players = [
+        make_player(
+            rank=4,
+            adp=4.0,
+            name="Baseline Receiver",
+            position="WR",
+            yahoo_player_id=22101,
+        ),
+        make_player(
+            rank=5,
+            adp=5.0,
+            name="Preference Quarterback",
+            position="QB",
+            yahoo_player_id=22102,
+        ),
+    ]
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+    )
+
+    assert packet.context.draft_preferences[0].name == "wait_qb"
+    assert packet.context.draft_preferences[0].strength == PreferenceStrength.MODERATE
+    assert [(candidate.name, candidate.baseline_rank) for candidate in packet.candidates] == [
+        ("Baseline Receiver", 1),
+        ("Preference Quarterback", 2),
+    ]
 
 
 def test_packet_normalizes_missing_following_turn_at_end_of_draft(
@@ -201,7 +260,7 @@ def test_packet_serializes_to_json_compatible_dictionary(
 
     serialized = json.dumps(packet.to_dict())
 
-    assert '"schema_version": 2' in serialized
+    assert '"schema_version": 3' in serialized
     assert '"Serializable Candidate"' in serialized
 
 
@@ -359,6 +418,81 @@ def test_consecutive_turn_packet_uses_broader_on_clock_frontier(
     assert packet.context.following_pick == 81
     assert packet.context.consecutive_turn is True
     assert len(packet.candidates) == 15
+
+
+def test_late_draft_packet_exposes_open_specialists_without_promoting_them(
+    league_config: LeagueConfig,
+    make_draft_pick: Callable[..., DraftPick],
+    make_draft_state: Callable[..., DraftState],
+    make_player: Callable[..., Player],
+) -> None:
+    """
+    GIVEN: four user selections remain and K/DEF are still open but low desirability
+    WHEN: the on-clock packet is built
+    THEN: two options at each specialist position are visible with their true baseline ranks
+    """
+    user_overall_picks = [6, 15, 26, 35, 46, 55, 66, 75, 86, 95, 106]
+    roster_positions = ["WR", "RB", "WR", "TE", "RB", "QB", "WR", "RB", "RB", "WR", "RB"]
+    state = make_draft_state(
+        my_draft_slot=6,
+        current_overall_pick=115,
+        picks=[
+            make_draft_pick(overall=overall, team_id=6, position=position)
+            for overall, position in zip(user_overall_picks, roster_positions, strict=True)
+        ],
+    )
+    players = [
+        make_player(
+            rank=rank,
+            adp=float(rank),
+            name=f"Depth Player {rank}",
+            position="WR" if rank % 2 else "RB",
+            yahoo_player_id=30500 + rank,
+            manual_tier=8,
+        )
+        for rank in range(1, 21)
+    ]
+    specialists = [
+        (201, "K", "Kicker One", 1),
+        (202, "K", "Kicker Two", 2),
+        (203, "DEF", "Defense One", 1),
+        (204, "DEF", "Defense Two", 2),
+    ]
+    for rank, position, name, tier in specialists:
+        players.append(
+            make_player(
+                rank=rank,
+                adp=float(rank),
+                name=name,
+                position=position,
+                yahoo_player_id=30500 + rank,
+                manual_tier=tier,
+            )
+        )
+
+    packet = build_draft_decision_packet(
+        evaluate_candidates(players, state, league_config),
+        state,
+        league_config,
+    )
+
+    assert packet.context.remaining_user_selections == 4
+    assert packet.context.open_starter_slots["K"] == 1
+    assert packet.context.open_starter_slots["DEF"] == 1
+    specialist_candidates = [
+        candidate for candidate in packet.candidates if candidate.position in {"K", "DEF"}
+    ]
+    assert {candidate.name for candidate in specialist_candidates} == {
+        "Kicker One",
+        "Kicker Two",
+        "Defense One",
+        "Defense Two",
+    }
+    assert sum(candidate.position == "K" for candidate in specialist_candidates) == 2
+    assert sum(candidate.position == "DEF" for candidate in specialist_candidates) == 2
+    assert all(candidate.baseline_rank > 20 for candidate in specialist_candidates)
+    assert packet.candidates[0].name == "Depth Player 1"
+    assert packet.candidates[0].baseline_rank == 1
 
 
 @pytest.mark.parametrize(

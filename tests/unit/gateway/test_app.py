@@ -120,7 +120,7 @@ def test_decision_endpoint_returns_deterministic_packet_for_valid_token(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["context"]["phase"] == "ON_CLOCK"
     assert payload["candidates"][0]["name"] == "Gateway Candidate"
 
@@ -185,6 +185,13 @@ def test_openapi_schema_exposes_only_read_operations_and_bearer_auth(
     assert decision_operation["operationId"] == "getDraftDecision"
     assert decision_operation["security"]
     assert schema["components"]["securitySchemes"]
+    context_properties = schema["components"]["schemas"]["DraftDecisionContext"]["properties"]
+    candidate_properties = schema["components"]["schemas"]["CandidateDecisionEvidence"][
+        "properties"
+    ]
+    assert "draft_preferences" in context_properties
+    assert "decision_round" in context_properties
+    assert "baseline_rank" in candidate_properties
 
 
 def test_gateway_rejects_blank_api_key() -> None:

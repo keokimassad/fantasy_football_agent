@@ -4,27 +4,59 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from .models import DraftPick, DraftState, LeagueConfig, TeamLookaheadContext
+from .models import (
+    DraftPick,
+    DraftState,
+    DraftStrategyConfig,
+    LeagueConfig,
+    TeamLookaheadContext,
+)
 
 
-def load_league_config(path: str | Path) -> LeagueConfig:
-    """Load and validate a league configuration from JSON.
+def load_draft_strategy_config(path: str | Path) -> DraftStrategyConfig:
+    """Load user-controlled draft strategy from a standalone JSON file."""
+    path = Path(path)
+
+    with path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    return DraftStrategyConfig.from_dict(data)
+
+
+def load_league_config(
+    path: str | Path,
+    *,
+    draft_strategy_path: str | Path | None = None,
+) -> LeagueConfig:
+    """Load league rules and optionally compose a separately stored draft strategy.
 
     Args:
-        path: JSON file containing the normalized league configuration.
+        path: JSON file containing league rules and scoring.
+        draft_strategy_path: Optional standalone user-strategy JSON file. Runtime
+            application paths should supply this so ``league.json`` remains league-only.
 
     Returns:
-        The validated league configuration.
+        The validated runtime league configuration.
 
     Raises:
-        ValueError: If the league configuration contains unsupported draft settings.
+        ValueError: If separate strategy is requested while league JSON also embeds one,
+            or if the league configuration contains unsupported draft settings.
     """
     path = Path(path)
 
     with path.open("r", encoding="utf-8") as file:
         data = json.load(file)
 
-    config = LeagueConfig.from_dict(data)
+    draft_strategy = None
+    if draft_strategy_path is not None:
+        if "draft_strategy" in data:
+            raise ValueError(
+                "league.json must contain league rules only when draft_strategy.json "
+                "is supplied separately."
+            )
+        draft_strategy = load_draft_strategy_config(draft_strategy_path)
+
+    config = LeagueConfig.from_dict(data, draft_strategy=draft_strategy)
     validate_league_config(config)
 
     return config

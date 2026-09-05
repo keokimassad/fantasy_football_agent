@@ -69,7 +69,10 @@ def main() -> None:
         print("Use --replace to intentionally replace it.")
         return
 
-    league = load_league_config(paths.league_config)
+    league = load_league_config(
+        paths.league_config,
+        draft_strategy_path=paths.draft_strategy,
+    )
 
     draft_id = args.draft_id.strip() if args.draft_id else _default_draft_id(args.session_type)
 

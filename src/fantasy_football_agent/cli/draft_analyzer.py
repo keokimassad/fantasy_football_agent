@@ -187,7 +187,10 @@ def main() -> None:
 
     paths = ApplicationPaths(workspace=args.workspace.resolve())
 
-    league = load_league_config(paths.league_config)
+    league = load_league_config(
+        paths.league_config,
+        draft_strategy_path=paths.draft_strategy,
+    )
     state = load_draft_state(paths.draft_state)
 
     validate_draft_state(state, league)

@@ -51,15 +51,17 @@ def _write_workspace(
         },
         "flex_positions": ["RB", "WR", "TE"],
         "scoring": {"receptions": 0.5},
-        "draft_strategy": {
-            "position_roster_targets": {
-                "QB": 1,
-                "RB": 4,
-                "WR": 4,
-                "TE": 1,
-                "K": 1,
-                "DEF": 1,
-            }
+    }
+    strategy = {
+        "strategy_name": "test-balanced",
+        "as_of": "2026-09-04",
+        "position_roster_targets": {
+            "QB": 1,
+            "RB": 4,
+            "WR": 4,
+            "TE": 1,
+            "K": 1,
+            "DEF": 1,
         },
     }
     state = {
@@ -72,6 +74,10 @@ def _write_workspace(
 
     (workspace / "config" / "league.json").write_text(
         json.dumps(league),
+        encoding="utf-8",
+    )
+    (workspace / "config" / "draft_strategy.json").write_text(
+        json.dumps(strategy),
         encoding="utf-8",
     )
     (workspace / "data" / "draft_state.json").write_text(

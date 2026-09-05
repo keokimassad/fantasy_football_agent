@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
 
-from .models import AdpPolicy, DraftState, LeagueConfig
+from .models import AdpPolicy, DraftPreference, DraftState, LeagueConfig
 from .recommendations import (
     AvailabilityRisk,
     CandidateDesirability,
@@ -39,7 +39,10 @@ DEFAULT_WAITING_MAX_CANDIDATE_LIMIT = 50
 ON_CLOCK_SKILL_POSITION_MINIMUMS = {"RB": 3, "WR": 3, "QB": 2, "TE": 2}
 WAITING_SKILL_POSITION_MAXIMUMS = {"RB": 9, "WR": 9, "QB": 5, "TE": 5}
 REQUIRED_STARTER_POSITION_OPTION_COUNT = 2
-DECISION_PACKET_SCHEMA_VERSION = 2
+RELEVANT_SPECIALIST_OPTION_COUNT = 1
+LATE_DRAFT_SPECIALIST_OPTION_COUNT = 2
+LATE_DRAFT_SPECIALIST_COVERAGE_SELECTIONS = 4
+DECISION_PACKET_SCHEMA_VERSION = 3
 
 
 class DecisionPhase(StrEnum):
@@ -72,7 +75,9 @@ class DraftDecisionContext:
     current_overall_pick: int
     current_drafting_team: int | None
     decision_pick: int | None
+    decision_round: int | None
     following_pick: int | None
+    following_round: int | None
     phase: DecisionPhase
     consecutive_turn: bool
     total_draft_picks: int
@@ -86,6 +91,9 @@ class DraftDecisionContext:
     roster_requirements: dict[str, int]
     flex_positions: tuple[str, ...]
     position_roster_targets: dict[str, int]
+    draft_strategy_name: str
+    draft_strategy_as_of: str | None
+    draft_preferences: tuple[DraftPreference, ...]
     scoring: dict[str, Any]
 
 
@@ -93,6 +101,7 @@ class DraftDecisionContext:
 class CandidateDecisionEvidence:
     """Represent deterministic evidence for one AI-visible draft candidate."""
 
+    baseline_rank: int
     yahoo_player_id: int
     name: str
     position: str
@@ -196,7 +205,13 @@ def _build_context(
         current_overall_pick=state.current_overall_pick,
         current_drafting_team=current_drafting_team,
         decision_pick=decision_pick,
+        decision_round=(
+            None if decision_pick is None else ((decision_pick - 1) // league.teams) + 1
+        ),
         following_pick=following_pick,
+        following_round=(
+            None if following_pick is None else ((following_pick - 1) // league.teams) + 1
+        ),
         phase=phase,
         consecutive_turn=(
             decision_pick is not None
@@ -237,18 +252,24 @@ def _build_context(
         roster_requirements=dict(league.roster),
         flex_positions=tuple(league.flex_positions),
         position_roster_targets=dict(league.draft_strategy.position_roster_targets),
+        draft_strategy_name=league.draft_strategy.strategy_name,
+        draft_strategy_as_of=league.draft_strategy.as_of,
+        draft_preferences=tuple(league.draft_strategy.preferences),
         scoring=dict(league.scoring),
     )
 
 
 def _to_candidate_evidence(
     recommendation: CandidateRecommendation,
+    *,
+    baseline_rank: int,
 ) -> CandidateDecisionEvidence:
     """Convert one deterministic recommendation into an agent-boundary snapshot."""
     evaluation = recommendation.evaluation
     player = evaluation.player
 
     return CandidateDecisionEvidence(
+        baseline_rank=baseline_rank,
         yahoo_player_id=player.yahoo_player_id,
         name=player.name,
         position=player.position,
@@ -376,30 +397,46 @@ def _add_relevant_specialists(
     recommendations: list[CandidateRecommendation],
     context: DraftDecisionContext,
 ) -> None:
-    """Guarantee one specialist only when deterministic evidence makes it relevant."""
+    """Expose specialist comparisons without promoting them in baseline ordering.
+
+    Earlier in the draft, a K/DEF is supplemented only when deterministic evidence
+    already makes that specialist at least plausibly timely. During the final four
+    user selections, two options at each still-open specialist starter are always
+    exposed so the reasoning layer can compare an intentional early specialist pick
+    against bench value without having to guess which K/DEF choices remain.
+    """
+    late_draft_coverage = (
+        context.remaining_user_selections <= LATE_DRAFT_SPECIALIST_COVERAGE_SELECTIONS
+    )
+
     for position in ("DEF", "K"):
         if context.open_starter_slots.get(position, 0) <= 0:
             continue
 
-        already_selected = any(
+        target_count = (
+            LATE_DRAFT_SPECIALIST_OPTION_COUNT
+            if late_draft_coverage
+            else RELEVANT_SPECIALIST_OPTION_COUNT
+        )
+        selected_at_position = sum(
             recommendation.evaluation.player.yahoo_player_id in selected_ids
             and recommendation.evaluation.player.position == position
             for recommendation in recommendations
         )
-        if already_selected:
+        if selected_at_position >= target_count:
             continue
 
-        candidate = next(
-            (
-                recommendation
-                for recommendation in recommendations
-                if recommendation.evaluation.player.position == position
-                and recommendation.desirability != CandidateDesirability.LOW
-            ),
-            None,
-        )
-        if candidate is not None:
-            selected_ids.add(candidate.evaluation.player.yahoo_player_id)
+        for recommendation in recommendations:
+            player = recommendation.evaluation.player
+            if player.position != position or player.yahoo_player_id in selected_ids:
+                continue
+            if not late_draft_coverage and recommendation.desirability == CandidateDesirability.LOW:
+                continue
+
+            selected_ids.add(player.yahoo_player_id)
+            selected_at_position += 1
+            if selected_at_position >= target_count:
+                break
 
 
 def _get_joint_decision_selection_count(context: DraftDecisionContext) -> int:
@@ -459,17 +496,12 @@ def _add_required_starter_candidates(
 
 
 def _select_phase_aware_candidates(
-    evaluations: list[CandidateEvaluation],
+    ordered: list[CandidateRecommendation],
     context: DraftDecisionContext,
 ) -> list[CandidateRecommendation]:
     """Select a phase-aware, positionally useful AI candidate frontier."""
-    if not evaluations:
+    if not ordered:
         return []
-
-    ordered = build_candidate_recommendations(
-        evaluations,
-        limit=len(evaluations),
-    )
     selected_ids = {
         recommendation.evaluation.player.yahoo_player_id
         for recommendation in ordered[:DEFAULT_DETERMINISTIC_ANCHOR_LIMIT]
@@ -526,22 +558,32 @@ def build_draft_decision_packet(
         raise ValueError("Decision packet candidate limit must be at least 1.")
 
     context = _build_context(state, league)
+    ordered = (
+        build_candidate_recommendations(evaluations, limit=len(evaluations)) if evaluations else []
+    )
+    baseline_rank_by_player_id = {
+        recommendation.evaluation.player.yahoo_player_id: rank
+        for rank, recommendation in enumerate(ordered, start=1)
+    }
 
     if candidate_limit is None:
         recommendations = _select_phase_aware_candidates(
-            evaluations,
+            ordered,
             context,
         )
     else:
-        recommendations = build_candidate_recommendations(
-            evaluations,
-            limit=candidate_limit,
-        )
+        recommendations = ordered[:candidate_limit]
 
     return DraftDecisionPacket(
         schema_version=DECISION_PACKET_SCHEMA_VERSION,
         context=context,
         candidates=tuple(
-            _to_candidate_evidence(recommendation) for recommendation in recommendations
+            _to_candidate_evidence(
+                recommendation,
+                baseline_rank=baseline_rank_by_player_id[
+                    recommendation.evaluation.player.yahoo_player_id
+                ],
+            )
+            for recommendation in recommendations
         ),
     )

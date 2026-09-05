@@ -142,7 +142,11 @@ FLEX while still having lower immediate utility when RB or WR starter slots rema
 
 ### Position Depth Need
 
-Bench-depth strategy is configured through `LeagueConfig.draft_strategy.position_roster_targets`.
+League rules and user strategy are separate persisted inputs. `config/league.json` contains league facts only; `config/draft_strategy.json` contains user-controlled roster targets and reusable drafting preferences. The loader composes them into the runtime `LeagueConfig` so existing deterministic recommendation functions keep one validated configuration boundary.
+
+Bench-depth strategy is configured through `LeagueConfig.draft_strategy.position_roster_targets`. Reusable drafting philosophy is configured through `LeagueConfig.draft_strategy.preferences`. Preferences are soft reasoning-layer guidance only: they are copied into `DraftDecisionPacket.context.draft_preferences` and must not mutate deterministic recommendation ordering. The packet also records `draft_strategy_name` and `draft_strategy_as_of` for observability, and each AI-visible candidate carries a `baseline_rank` from the complete deterministic ordering so a downstream agent can compare its strategy-aware alternative against an independent baseline.
+
+The late decision packet guarantees comparison coverage for still-open K/DEF starters during the final four user selections. This is candidate visibility, not a specialist ranking bonus: the candidates retain their original `baseline_rank`, desirability, utility, and timing evidence.
 
 For candidates whose `RosterFit` is `DEPTH`, `PositionDepthNeed` describes how far the current
 roster remains below the configured target:
@@ -589,7 +593,7 @@ The `&&` prevents analysis from running after a failed synchronization. Successf
 
 Every draft session writes an ignored local JSONL event stream to `data/draft_logs/<draft-id>.jsonl`; no additional live-draft command is required. Observability is best-effort and must never interrupt draft execution.
 
-The first event snapshots reproducibility inputs that are safe to store locally: league configuration, the full rankings CSV, player overrides when present, Custom GPT instructions/knowledge, Python version, and Git commit/branch/dirty state. It intentionally excludes `oauth2.json`, gateway bearer secrets, ngrok credentials, environment variables, and other credentials.
+The first event snapshots reproducibility inputs that are safe to store locally: league configuration, the standalone draft strategy, the full rankings CSV, player overrides when present, Custom GPT instructions/knowledge, Python version, and Git commit/branch/dirty state. It intentionally excludes `oauth2.json`, gateway bearer secrets, ngrok credentials, environment variables, and other credentials.
 
 Runtime events capture:
 
@@ -799,7 +803,7 @@ An explicit `candidate_limit` remains available for tests/diagnostics and bypass
 
 ### Local market-data overrides
 
-The Yahoo rankings CSV remains the immutable source snapshot. Material news can make historical ADP actively misleading before the next full data refresh, so the runtime may load `data/player_overrides.json` after rankings parsing. The file is local/ignored by Git; `data/player_overrides.example.json` documents the schema.
+The Yahoo rankings CSV remains the source snapshot for one decision-data revision. Material news can make historical ADP actively misleading before the next full data refresh, so the runtime may load `data/player_overrides_2026.json` after rankings parsing. The production rankings and active override file are tracked in Git; `data/player_overrides.example.json` documents the override schema.
 
 Supported policies:
 

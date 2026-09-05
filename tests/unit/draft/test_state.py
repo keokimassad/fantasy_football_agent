@@ -33,14 +33,15 @@ pytestmark = pytest.mark.unit
 class TestStateLoading:
     """Loading persisted league and draft state."""
 
-    def test_reads_valid_league_json(self, tmp_path: Path) -> None:
+    def test_reads_separate_league_rules_and_draft_strategy_json(self, tmp_path: Path) -> None:
         """
-        GIVEN: a JSON file containing a supported league configuration
-        WHEN: the league configuration is loaded
-        THEN: the normalized league settings are returned
+        GIVEN: separate JSON files for league rules and user draft strategy
+        WHEN: the runtime league configuration is loaded
+        THEN: league rules remain separate on disk and strategy is composed in memory
         """
-        config_path = tmp_path / "league.json"
-        config_path.write_text(
+        league_path = tmp_path / "league.json"
+        strategy_path = tmp_path / "draft_strategy.json"
+        league_path.write_text(
             json.dumps(
                 {
                     "league_name": "Test League",
@@ -59,27 +60,47 @@ class TestStateLoading:
                     },
                     "flex_positions": ["RB", "WR", "TE"],
                     "scoring": {},
-                    "draft_strategy": {
-                        "position_roster_targets": {
-                            "QB": 1,
-                            "RB": 4,
-                            "WR": 4,
-                            "TE": 1,
-                            "K": 1,
-                            "DEF": 1,
-                        }
+                }
+            ),
+            encoding="utf-8",
+        )
+        strategy_path.write_text(
+            json.dumps(
+                {
+                    "strategy_name": "test-rb-priority",
+                    "as_of": "2026-09-04",
+                    "position_roster_targets": {
+                        "QB": 1,
+                        "RB": 4,
+                        "WR": 4,
+                        "TE": 1,
+                        "K": 1,
+                        "DEF": 1,
                     },
+                    "preferences": [
+                        {
+                            "name": "early_rb",
+                            "strength": "STRONG",
+                            "guidance": "Prefer an early running back.",
+                        }
+                    ],
                 }
             ),
             encoding="utf-8",
         )
 
-        league = load_league_config(config_path)
+        league = load_league_config(
+            league_path,
+            draft_strategy_path=strategy_path,
+        )
 
         assert league.league_name == "Test League"
         assert league.teams == 10
         assert league.draft["type"] == "snake"
         assert league.roster["FLEX"] == 1
+        assert league.draft_strategy.strategy_name == "test-rb-priority"
+        assert league.draft_strategy.as_of == "2026-09-04"
+        assert league.draft_strategy.preferences[0].name == "early_rb"
 
     def test_reconstructs_recorded_picks(self, tmp_path: Path) -> None:
         """

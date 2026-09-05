@@ -28,6 +28,8 @@ It contains the concise, always-on behavior contract:
 - follow `WAITING`, `ON_CLOCK`, consecutive-turn, and `COMPLETE` phase behavior;
 - preserve roster feasibility when `optional_draft_capacity` requires an open starter to be filled;
 - use the phase-aware candidate frontier rather than assuming every visible candidate has the same survival profile;
+- preserve the deterministic `baseline_rank` while applying saved user strategy only as a separate soft overlay;
+- show both the actual baseline player and actual strategy-aware player whenever those views conflict;
 - honor effective ADP policy and never resurrect ignored historical `source_adp` as current market evidence;
 - do not invent injuries, suspensions, player roles, availability, or opponent behavior;
 - fall back to the deterministic CLI when the Action cannot retrieve current state;
@@ -76,7 +78,13 @@ state, or league rules.
 
 ## Phase-aware candidate boundary
 
-The Action intentionally exposes different candidate horizons by phase. `WAITING` expands with the number of selections before the user's next pick so the GPT can reason about players likely to survive after the obvious top names disappear. Ordinary `ON_CLOCK` packets are smaller for latency and decision focus, but retain minimum skill-position breadth. Consecutive snake turns set `context.consecutive_turn=true` and expose a broader frontier so the GPT can recommend both picks from one fresh Action call.
+The Action intentionally exposes different candidate horizons by phase. `WAITING` expands with the number of selections before the user's next pick so the GPT can reason about players likely to survive after the obvious top names disappear. Ordinary `ON_CLOCK` packets are smaller for latency and decision focus, but retain minimum skill-position breadth. During the final four user selections, the packet also guarantees two K/DEF comparison options for each still-open specialist starter even when those players remain LOW desirability; this exposes alternatives without promoting them in the deterministic baseline. Consecutive snake turns set `context.consecutive_turn=true` and expose a broader frontier so the GPT can recommend both picks from one fresh Action call.
+
+Every candidate includes `baseline_rank`, its position in the complete deterministic ordering before phase-aware filtering. This lets the GPT quantify the real cost of a preference-driven deviation even when the strategy-aware player entered the packet through supplemental coverage.
+
+## Saved draft preferences
+
+Reusable strategy belongs in the standalone `config/draft_strategy.json`, separate from league rules. The gateway exposes its identity as `context.draft_strategy_name` / `context.draft_strategy_as_of` and its soft rules as `context.draft_preferences`; those preferences do not participate in deterministic recommendation sorting. The Custom GPT compares the independent baseline against a strategy-aware choice and collapses the response when both views agree. Explicit chat instructions may temporarily overlay the saved strategy for a mock or experiment, but should not silently rewrite the saved strategy file.
 
 The CLI top-five is separate from this AI boundary and remains the deterministic manual fallback.
 
