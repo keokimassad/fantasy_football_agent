@@ -4,9 +4,11 @@ import pytest
 
 from fantasy_football_agent.draft.models import (
     DraftPick,
+    DraftPreference,
     DraftState,
     DraftStrategyConfig,
     LeagueConfig,
+    PreferenceStrength,
 )
 
 pytestmark = pytest.mark.unit
@@ -43,7 +45,15 @@ def test_league_config_from_dict_reconstructs_league_settings() -> None:
                 "TE": 1,
                 "K": 1,
                 "DEF": 1,
-            }
+            },
+            "preferences": [
+                {
+                    "name": "early_rb",
+                    "strength": "strong",
+                    "guidance": "Prefer at least one RB by the end of Round 2.",
+                    "exception": "Do not force a material tier reach.",
+                }
+            ],
         },
     }
 
@@ -74,9 +84,30 @@ def test_league_config_from_dict_reconstructs_league_settings() -> None:
                 "TE": 1,
                 "K": 1,
                 "DEF": 1,
-            }
+            },
+            preferences=(
+                DraftPreference(
+                    name="early_rb",
+                    strength=PreferenceStrength.STRONG,
+                    guidance="Prefer at least one RB by the end of Round 2.",
+                    exception="Do not force a material tier reach.",
+                ),
+            ),
         ),
     )
+
+
+def test_draft_strategy_defaults_missing_preferences_to_empty() -> None:
+    """
+    GIVEN: a legacy league config with roster targets but no user preference list
+    WHEN: draft strategy is reconstructed
+    THEN: the strategy remains valid with no saved soft preferences
+    """
+    strategy = DraftStrategyConfig.from_dict(
+        {"position_roster_targets": {"QB": 1, "RB": 4, "WR": 4, "TE": 1}}
+    )
+
+    assert strategy.preferences == ()
 
 
 def test_draft_state_from_dict_reconstructs_recorded_picks() -> None:

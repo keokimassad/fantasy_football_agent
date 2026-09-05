@@ -1,0 +1,13 @@
+{
+  "strategy_name": "preference-free-baseline",
+  "as_of": "2026-09-04",
+  "position_roster_targets": {
+    "QB": 1,
+    "RB": 4,
+    "WR": 4,
+    "TE": 1,
+    "K": 1,
+    "DEF": 1
+  },
+  "preferences": []
+}

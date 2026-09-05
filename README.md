@@ -68,6 +68,8 @@ fantasy_football_agent/
 │   └── workflows/
 │       └── ci.yml
 ├── config/
+│   ├── draft_strategy.example.json
+│   ├── draft_strategy_archive/
 │   └── league.example.json
 ├── data/
 │   ├── draft_state.example.json
@@ -113,7 +115,7 @@ fantasy_football_agent/
 └── README.md
 ```
 
-Local runtime files such as `oauth2.json`, the active league configuration, current draft state, and full ranking data are intentionally ignored by Git.
+Secrets and ephemeral runtime files such as `oauth2.json`, the active league configuration, draft state, synchronization status, and draft logs are intentionally ignored by Git. Decision inputs that must remain reproducible — the active draft strategy, named strategy snapshots, production Yahoo rankings, and player overrides — are tracked.
 
 ## Setup
 
@@ -130,15 +132,17 @@ Install the project and development dependencies:
 python -m pip install -e ".[dev]"
 ```
 
-Create local working copies of the example inputs:
+Create the local league configuration from its sanitized example:
 
 ```bash
 cp config/league.example.json config/league.json
-cp data/yahoo_rankings.example.csv data/yahoo_rankings_2026.csv
-cp data/player_overrides.example.json data/player_overrides_2026.json
 ```
 
-A draft-state file should normally be created with `ff-draft-new` rather than copied manually.
+The repository already contains the tracked active decision inputs `config/draft_strategy.json`, `data/yahoo_rankings_2026.csv`, and `data/player_overrides_2026.json`. Their `*.example` counterparts document the schemas and should not replace the active files during normal setup. A draft-state file should normally be created with `ff-draft-new` rather than copied manually.
+
+Keep `config/league.json` specific to league rules. User-controlled drafting philosophy lives in `config/draft_strategy.json`, including baseline position-roster targets and reusable soft preferences. Soft preferences are exposed to the Custom GPT as a strategy overlay and never reorder the deterministic baseline; every visible candidate preserves an independent `baseline_rank` so preference-driven deviations remain auditable.
+
+Before materially changing the active strategy, copy the current file into `config/draft_strategy_archive/` using a dated descriptive name such as `2026-09-04_rb-priority-wait-qb.json`. Named strategy snapshots are tracked so important strategy milestones remain easy to review alongside normal Git history.
 
 The ranking CSV schema is:
 
@@ -150,7 +154,7 @@ Rank,Position Rank,ADP,Player Name,Position,Team,Bye,% Drafted,Yahoo Player ID,Y
 
 ### Local market-data overrides
 
-`data/player_overrides.json` is an optional local exception file for market data that became stale after the Yahoo/ADP snapshot was captured. The file is ignored by Git; `data/player_overrides.example.json` documents the schema and currently includes the Josh Jacobs ADP invalidation used for live-draft regression testing.
+`data/player_overrides_2026.json` is the tracked active exception file for market data that became stale after the Yahoo/ADP snapshot was captured. `data/player_overrides.example.json` documents the schema, while Git history preserves the exact overrides used with each tracked rankings/strategy revision.
 
 Supported ADP policies are:
 

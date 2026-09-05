@@ -21,6 +21,11 @@ class ApplicationPaths:
         return self.workspace / "config" / "league.json"
 
     @property
+    def draft_strategy(self) -> Path:
+        """Return the active user draft-strategy file for this workspace."""
+        return self.workspace / "config" / "draft_strategy.json"
+
+    @property
     def draft_state(self) -> Path:
         """Return the persisted draft-state file for this workspace."""
         return self.workspace / "data" / "draft_state.json"

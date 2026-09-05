@@ -27,6 +27,10 @@ def _write_source_files(workspace: Path) -> ApplicationPaths:
     paths.custom_gpt_instructions.parent.mkdir(parents=True)
 
     paths.league_config.write_text('{"league_name":"Telemetry League"}\n', encoding="utf-8")
+    paths.draft_strategy.write_text(
+        '{"strategy_name":"telemetry-strategy","position_roster_targets":{},"preferences":[]}\n',
+        encoding="utf-8",
+    )
     paths.rankings.write_text("Rank,Player Name\n1,Player One\n", encoding="utf-8")
     paths.player_overrides.write_text('{"players":[]}\n', encoding="utf-8")
     paths.custom_gpt_instructions.write_text("Use the packet.\n", encoding="utf-8")
@@ -61,6 +65,10 @@ def test_session_log_captures_reproducibility_sources(tmp_path: Path) -> None:
     event = events[0]
     assert event["event_type"] == "session_started"
     assert event["state"]["draft_id"] == state.draft_id
+    assert event["sources"]["draft_strategy"]["content"].startswith(
+        '{"strategy_name":"telemetry-strategy"'
+    )
+    assert len(event["sources"]["draft_strategy"]["sha256"]) == 64
     assert event["sources"]["rankings"]["content"].startswith("Rank,Player Name")
     assert len(event["sources"]["rankings"]["sha256"]) == 64
     assert event["sources"]["custom_gpt_instructions"]["content"] == "Use the packet.\n"

@@ -20,6 +20,7 @@ def test_application_paths_resolve_expected_files_from_workspace(
     paths = ApplicationPaths(workspace=tmp_path)
 
     assert paths.league_config == tmp_path / "config" / "league.json"
+    assert paths.draft_strategy == tmp_path / "config" / "draft_strategy.json"
     assert paths.draft_state == tmp_path / "data" / "draft_state.json"
     assert paths.draft_sync_status == tmp_path / "data" / "draft_sync_status.json"
     assert paths.draft_logs == tmp_path / "data" / "draft_logs"

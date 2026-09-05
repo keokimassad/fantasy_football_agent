@@ -1,0 +1,44 @@
+{
+  "strategy_name": "example-strategy",
+  "as_of": "2026-09-04",
+  "position_roster_targets": {
+    "QB": 1,
+    "RB": 4,
+    "WR": 4,
+    "TE": 1,
+    "K": 1,
+    "DEF": 1
+  },
+  "preferences": [
+    {
+      "name": "early_rb",
+      "strength": "STRONG",
+      "guidance": "Prefer at least one RB by the end of Round 2; do not leave Round 3 without an RB; prefer two RBs through Round 3 when the board supports it.",
+      "exception": "Do not pass materially superior tier/value solely to satisfy the preferred construction."
+    },
+    {
+      "name": "wait_qb",
+      "strength": "MODERATE",
+      "guidance": "Prefer to wait on premium quarterbacks rather than taking them at normal cost.",
+      "exception": "Take an early QB when the value fall is unusually large and the RB/WR/TE opportunity cost is modest."
+    },
+    {
+      "name": "elite_te",
+      "strength": "MODERATE",
+      "guidance": "Be willing to take an elite or top-tier TE when the value is strong.",
+      "exception": "Do not materially compromise the strong early-RB preference unless the TE value advantage is substantial."
+    },
+    {
+      "name": "defense_timing",
+      "strength": "STRONG",
+      "guidance": "Prefer to have DEF filled by the end of Round 13 and consider acting earlier when a premium option or an observed defense run makes waiting unattractive.",
+      "exception": "This is a soft timing preference, not a reason to ignore a materially superior alternative."
+    },
+    {
+      "name": "kicker_timing",
+      "strength": "STRONG",
+      "guidance": "Prefer to have K filled by the end of Round 14 and consider acting earlier for premium value or an observed kicker run.",
+      "exception": "This is a soft timing preference, not a reason to ignore a materially superior alternative."
+    }
+  ]
+}

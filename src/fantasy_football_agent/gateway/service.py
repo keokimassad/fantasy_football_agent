@@ -38,7 +38,10 @@ def build_current_decision_packet(
         The current deterministic decision packet. A completed draft is represented by
         a packet with a ``COMPLETE`` phase and no candidates.
     """
-    league = load_league_config(paths.league_config)
+    league = load_league_config(
+        paths.league_config,
+        draft_strategy_path=paths.draft_strategy,
+    )
     state = load_draft_state(paths.draft_state)
     validate_draft_state(state, league)
     try:
