@@ -4,6 +4,8 @@ This document is the engineering and operational runbook for the Fantasy Footbal
 
 For the public project overview and end-user workflow, see [README.md](README.md).
 
+For the three-terminal live-draft startup and restart procedure, see [docs/live-draft-runbook.md](docs/live-draft-runbook.md). For the production architecture and 2026 live-draft findings, see [docs/architecture.md](docs/architecture.md) and [docs/postmortems/2026-live-draft.md](docs/postmortems/2026-live-draft.md).
+
 ## Development Environment
 
 Target runtime:
@@ -47,17 +49,19 @@ command -v ff-draft-new
 The draft engine is deterministic.
 
 ```text
-Future AI / LLM
+Yahoo integration boundary
+        ↓
+factual synchronization / identity resolution
+        ↓
+deterministic draft engine
+        ↓
+structured DraftDecisionPacket
+        ↓
+read-only gateway / Custom GPT
         ↓
 reasoning and recommendations
         ↓
-structured deterministic results
-        ↓
-draft engine
-        ↓
-factual state and calculations
-        ↓
-Yahoo integration boundary
+user final decision
 ```
 
 The AI may reason about draft state, but it must not invent draft state.
@@ -82,12 +86,12 @@ build_candidate_recommendations()
               |
               v
  CandidateRecommendation[]
-              |
-              v
-          CLI rendering
-              |
-              v
-    future AI consumption
+          /           \
+         v             v
+   CLI rendering   DraftDecisionPacket
+                       |
+                       v
+                gateway / Custom GPT
 ```
 
 The CLI should render structured results rather than own recommendation rules.
@@ -494,7 +498,7 @@ Important behaviors:
 
 Do not silently resolve factual ambiguity from ADP.
 
-## Yahoo Draft-Chat Smoke Test
+## Yahoo Selection-Text Smoke Test
 
 Create a disposable mock:
 
@@ -578,7 +582,7 @@ Expected behavior:
 
 Fatal Yahoo synchronization failures mark the active draft stale. While stale, both `ff-draft` and the decision gateway refuse recommendations until a later successful Yahoo sync catches up beyond the observed failure point. An active-draft Yahoo sync that parses zero selections also exits nonzero so the `ffmock` chain stops, but it does not persist a stale marker because no newer Yahoo pick was actually observed.
 
-## macOS Mock Helper
+## macOS Draft Helper
 
 ```bash
 ffmock() {
@@ -618,9 +622,9 @@ ff-draft-new \
   --workspace .
 ```
 
-## Real Mock-Draft Acceptance Testing
+## Mock and Live-Draft Acceptance Testing
 
-Real mocks are the main acceptance test for recommendation behavior and live workflow.
+Real mocks remain the main repeatable acceptance test for recommendation behavior and live workflow. The September 7, 2026 real draft is the production validation baseline and should be preserved through sanitized artifacts plus private raw telemetry.
 
 Create the mock only after Yahoo reveals the assigned slot:
 
@@ -932,35 +936,32 @@ version-controlled material under `docs/custom_gpt/` before changing the provide
 
 ## Current Milestone
 
-The project is now **AI-assisted mock-draft ready with a deterministic fallback**.
+The 2026 draft cycle is **live-draft validated**. The deterministic engine, strategy-aware Custom GPT boundary, read-only FastAPI/OpenAPI gateway, fallback path, and observability stack were used during a real 10-team, 15-round Yahoo draft on September 7, 2026. All 150 selections were synchronized and the draft reached `COMPLETE`.
 
 Validated foundations include:
 
-1. deterministic league, state, roster, tier, and snake-order modeling;
-2. safe Yahoo Draft Chat parsing, reconciliation, overlap handling, persistence, and undo;
-3. phase-aware deterministic candidate evaluation and explainable top-five fallback;
-4. a versioned, JSON-compatible `DraftDecisionPacket` with phase-aware candidate horizons, skill-position breadth, and consecutive-turn context;
-5. a read-only bearer-authenticated FastAPI gateway;
-6. public HTTPS tunnel validation without exposing the local service directly;
-7. a private Custom GPT Action consuming the generated OpenAPI schema;
-8. successful `WAITING`, `ON_CLOCK`, and `COMPLETE` Action-path validation;
-9. deterministic fallback preserved when external AI infrastructure is unavailable;
-10. compact 2026 Yahoo auto-draft guidance separated from longer Knowledge context; and
-11. current rankings that preserve manual tiers while carrying dated expert tiers, position rank,
-    Yahoo status, and injury context;
-12. local audited ADP `IGNORE` / `OVERRIDE` policy for stale market snapshots; and
-13. slot-one regression coverage for long waiting horizons and consecutive-turn candidate breadth.
+1. deterministic league, state, roster, tier, recommendation, and snake-order modeling;
+2. safe Yahoo selection parsing, identity resolution, reconciliation, overlap handling, persistence, and undo;
+3. phase-aware deterministic candidate evaluation and explainable CLI fallback;
+4. a schema-versioned `DraftDecisionPacket` with baseline ranks, strategy context, positional breadth, starter-capacity protection, and consecutive-turn behavior;
+5. a read-only bearer-authenticated FastAPI/OpenAPI gateway;
+6. a private Custom GPT Action with explicit factual-authority and fallback constraints;
+7. repeated Yahoo mock-draft acceptance tests plus real-draft use;
+8. append-only JSONL telemetry with synchronization input/results, exact CLI/gateway packets, source snapshots, and runtime/Git provenance;
+9. fail-closed stale-state and missing-pick behavior under real incomplete Yahoo ranges;
+10. audited ADP `VALID` / `IGNORE` / `OVERRIDE` handling; and
+11. a complete deterministic fallback when external AI infrastructure is slow or unavailable.
+
+The most important production discovery was an input-source failure: Yahoo Draft Chat did not expose selections consistently across real clients. Yahoo Results was used successfully as the alternate source, and gap detection prevented incomplete copied ranges from corrupting state. The next draft-sync milestone is therefore a source-neutral ingestion boundary with first-class Draft Chat and Results adapters.
 
 Next sequence:
 
-1. validate gateway/tunnel/Action failure paths under live-clock conditions;
-2. run the final real-league acceptance workflow using the current 10-team, 15-round configuration;
-3. continue AI-assisted mocks and record meaningful AI-vs-deterministic divergences;
-4. improve opponent-specific return/survival modeling;
-5. add player-relationship/portfolio evidence only when it can be represented reliably;
-6. refine compact live-draft UX and Draft Chat gap recovery;
-7. keep recent news/injury context separate from deterministic availability/state; and
-8. evaluate richer Yahoo API ingestion after the live-draft path is reliable.
+1. preserve the 2026 production JSONL privately and maintain only sanitized derivatives in public source control;
+2. build an audit/query CLI or API over the existing JSONL history;
+3. add selection provenance (`SYSTEM_RECOMMENDED`, `USER_OVERRIDE`, `USER_PREDECIDED`, `AUTO_DRAFTED`, `UNKNOWN`);
+4. add separately sourced player-role/depth-chart context with timestamps/confidence;
+5. calibrate marginal bench-slot utility and realized return risk from mock + real histories;
+6. improve opponent human/auto classification before strengthening Yahoo auto-draft assumptions; and
+7. reuse the deterministic-first architecture for in-season lineup, waiver, trade, and roster-management workflows.
 
-If schedule pressure increases, reduce scope rather than lowering architecture, typing, testing,
-readability, or maintainability standards.
+Do not retune the recommendation engine from isolated draft outcomes. Prefer reproducible evidence from the captured histories, add one explainable domain concept at a time, and preserve deterministic safety, typing, testing, and fallback behavior.

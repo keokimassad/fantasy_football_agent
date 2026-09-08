@@ -1,64 +1,94 @@
 # Fantasy Football Agent
 
-A Python 3.12 fantasy-football draft assistant built around a deterministic-first architecture. Draft state, roster accounting, player availability, tier analysis, snake-draft lookahead, Yahoo draft synchronization, and candidate evaluation are handled by deterministic code. A private Custom GPT can then reason over a versioned `DraftDecisionPacket` through a read-only HTTPS gateway without becoming the source of draft truth.
+A Python 3.12 fantasy-football draft decision-support system built around a deterministic-first architecture. Draft state, roster accounting, player availability, tier analysis, snake-draft lookahead, Yahoo synchronization, candidate evaluation, and strategy inputs are handled by deterministic code. A private Custom GPT reasons over a versioned `DraftDecisionPacket` through a read-only HTTPS gateway without becoming the source of draft truth.
 
-The project is currently **AI-assisted mock-draft ready**: Yahoo mock drafts can be synchronized from copied draft chat, analyzed deterministically, and exposed to the private Custom GPT for phase-aware recommendations while the deterministic CLI remains the fallback.
-
-## What It Does
-
-- Loads and validates league configuration and persisted draft state.
-- Creates fresh mock or actual draft sessions with an explicit draft slot.
-- Models snake-draft ownership, including round turns.
-- Tracks team rosters and open starter slots, including FLEX overflow.
-- Loads ranked players and determines which players remain available.
-- Uses Yahoo Player ID as the preferred stable player identity.
-- Supports optional manual player tiers alongside Yahoo rank and ADP.
-- Applies audited local ADP `VALID` / `IGNORE` / `OVERRIDE` policy without mutating the Yahoo source snapshot.
-- Calculates tier depth, tier drops, scarcity flags, and tier coverage.
-- Builds active lookahead windows between the current pick and the user's next turn.
-- Estimates position exposure from opponents drafting inside that window.
-- Parses copied Yahoo draft-chat selections.
-- Resolves Yahoo-style abbreviated player names using position, NFL team, bye week, and Yahoo Player ID.
-- Safely reconciles copied Yahoo history with existing local draft state.
-- Detects overlapping history, missing-pick gaps, conflicts, and ambiguous player identities.
-- Persists successful new selections incrementally so later failures do not discard earlier work.
-- Supports manual pick entry and undo.
-- Isolates Yahoo OAuth/client code behind a dedicated integration boundary.
-- Exposes draft creation, synchronization/update, and analysis through command-line entry points.
-- Fails closed after known Yahoo synchronization errors so stale state cannot produce CLI or gateway recommendations.
-- Rejects empty/unparseable Yahoo sync attempts once an active draft is underway so `ffmock` cannot silently analyze unchanged state.
-- Repeats live pick status and the leading deterministic/prep candidates in a compact terminal footer.
-- Builds a versioned, JSON-compatible `DraftDecisionPacket` with phase-aware AI candidate horizons.
-- Preserves required-starter options when late picks can no longer all be spent on optional depth.
-- Exposes the current packet through a bearer-authenticated, read-only FastAPI gateway.
-- Supports a private Custom GPT Action that refreshes deterministic state before current-draft decisions.
-- Automatically records local, analysis-ready draft telemetry including Yahoo sync input/results, deterministic state, and exact CLI/gateway `DraftDecisionPacket` snapshots.
-
-## Architecture
-
-```text
-Yahoo Draft Chat / local config / rankings
-        ↓
-deterministic draft state
-        ↓
-deterministic candidate evaluation
-        ↓
-versioned DraftDecisionPacket
-        ↓
-read-only HTTPS gateway
-        ↓
-private Custom GPT Action
-        ↓
-AI recommendation / tradeoff reasoning
-        ↓
-user final decision
-```
+The project is **live-draft validated**. After repeated Yahoo mock-draft acceptance tests, the complete system was used during a real 10-team, 15-round Yahoo Fantasy Football snake draft on September 7, 2026. The draft reached `COMPLETE` with all 150 league selections synchronized and all required roster positions filled.
 
 The core rule is:
 
 > **AI may reason about draft state, but it should not invent draft state.**
 
+## What It Does
+
+- Loads and validates league configuration, draft strategy, rankings, market overrides, and persisted draft state.
+- Creates fresh mock or actual draft sessions with an explicit draft slot.
+- Models snake-draft ownership, including round turns and consecutive user selections.
+- Tracks team rosters, FLEX accounting, open starter slots, remaining selections, and optional bench capacity.
+- Uses Yahoo Player ID as the preferred stable player identity.
+- Supports manually curated position tiers alongside Yahoo rank and ADP.
+- Applies audited ADP `VALID` / `IGNORE` / `OVERRIDE` policy without mutating the source ranking snapshot.
+- Calculates tier depth, tier drops, scarcity flags, market timing, opponent exposure, and return/loss risk.
+- Builds a deterministic candidate ordering and a versioned, JSON-compatible `DraftDecisionPacket`.
+- Preserves each AI-visible candidate's independent `baseline_rank` so saved strategy never silently rewrites the deterministic baseline.
+- Uses phase-aware candidate horizons for `WAITING`, `ON_CLOCK`, consecutive turns, and `COMPLETE`.
+- Safely reconciles overlapping Yahoo history and detects missing-pick gaps, conflicts, duplicates, and ambiguous player identities.
+- Persists successful selections incrementally so later failures do not discard verified progress.
+- Fails closed after synchronization errors so stale state cannot produce CLI or gateway recommendations.
+- Exposes the current packet through a bearer-authenticated, read-only FastAPI/OpenAPI gateway.
+- Supports a private Custom GPT Action that refreshes authoritative state before current-draft recommendations.
+- Keeps the deterministic CLI as the required low-latency fallback if the gateway, tunnel, Action, or model is unavailable.
+- Automatically records append-only JSONL telemetry with synchronization input/results, deterministic state, exact CLI/gateway packets, runtime provenance, and source snapshots.
+
+## Architecture
+
+```text
+Yahoo draft input / local config / rankings
+                  |
+                  v
+      synchronization + identity resolution
+                  |
+                  v
+       persisted deterministic draft state
+                  |
+                  v
+       deterministic candidate evaluation
+                  |
+                  v
+       versioned DraftDecisionPacket
+                  |
+                  v
+       read-only FastAPI/OpenAPI gateway
+                  |
+                  v
+             private Custom GPT
+                  |
+                  v
+      strategy / tradeoff explanation
+                  |
+                  v
+             user final decision
+
+normal draft workflow -----------------------> append-only JSONL telemetry
+```
+
 Yahoo-specific parsing, synchronization, authentication, gateway behavior, and model-facing integration remain outside the deterministic draft engine. This keeps the core testable without network access, preserves a complete deterministic fallback, and allows the AI layer to evolve without weakening factual draft-state integrity.
+
+See [`docs/architecture.md`](docs/architecture.md) for the detailed component and authority boundaries.
+
+## Live-Draft Validation — September 7, 2026
+
+The 2026 draft cycle culminated in a real Yahoo draft using the same deterministic engine, strategy configuration, gateway, Custom GPT Action, and observability path exercised in mocks.
+
+```text
+Platform:        Yahoo Fantasy Football
+Format:          10-team, 15-round snake
+Scoring:         0.5 PPR
+Draft slot:      10
+Pick clock:      90 seconds
+League picks:    150
+Final phase:     COMPLETE
+```
+
+The live draft validated more than recommendation quality. It exercised state recovery, turn-pair reasoning, specialist timing, gateway/model fallback, append-only audit logging, and fail-closed reconciliation when copied Yahoo ranges were incomplete.
+
+A major production discovery was that Yahoo Draft Chat did **not** expose selection messages consistently across the live clients being used. The draft continued by copying Yahoo's Results view instead. The existing structural parser successfully handled those numeric selection blocks, while the synchronizer correctly rejected ranges that skipped the next locally expected pick. Yahoo Results is therefore a validated emergency input from this draft, but it is not yet modeled as a dedicated first-class adapter.
+
+The sanitized public postmortem and final draft snapshot are available at:
+
+- [`docs/postmortems/2026-live-draft.md`](docs/postmortems/2026-live-draft.md)
+- [`docs/live_draft/2026-final-state.json`](docs/live_draft/2026-final-state.json)
+
+Raw production draft logs remain private because telemetry intentionally preserves copied Yahoo input and may contain league-member chat/usernames and other source material.
 
 ## Project Structure
 
@@ -69,13 +99,22 @@ fantasy_football_agent/
 │       └── ci.yml
 ├── config/
 │   ├── draft_strategy.example.json
+│   ├── draft_strategy.json
 │   ├── draft_strategy_archive/
 │   └── league.example.json
 ├── data/
 │   ├── draft_state.example.json
 │   ├── player_overrides.example.json
-│   └── yahoo_rankings.example.csv
+│   ├── player_overrides_2026.json
+│   ├── yahoo_rankings.example.csv
+│   └── yahoo_rankings_2026.csv
 ├── docs/
+│   ├── architecture.md
+│   ├── live-draft-runbook.md
+│   ├── live_draft/
+│   │   └── 2026-final-state.json
+│   ├── postmortems/
+│   │   └── 2026-live-draft.md
 │   └── custom_gpt/
 │       ├── README.md
 │       ├── instructions.md
@@ -85,6 +124,7 @@ fantasy_football_agent/
 ├── src/
 │   └── fantasy_football_agent/
 │       ├── application_paths.py
+│       ├── observability.py
 │       ├── cli/
 │       │   ├── draft_analyzer.py
 │       │   ├── draft_creator.py
@@ -93,11 +133,12 @@ fantasy_football_agent/
 │       │   ├── analysis.py
 │       │   ├── decision_packet.py
 │       │   ├── market_overrides.py
-│       ├── observability.py
 │       │   ├── models.py
 │       │   ├── rankings.py
+│       │   ├── recommendations.py
 │       │   ├── session.py
-│       │   └── state.py
+│       │   ├── state.py
+│       │   └── sync_status.py
 │       ├── gateway/
 │       │   ├── app.py
 │       │   └── service.py
@@ -115,7 +156,7 @@ fantasy_football_agent/
 └── README.md
 ```
 
-Secrets and ephemeral runtime files such as `oauth2.json`, the active league configuration, draft state, synchronization status, and draft logs are intentionally ignored by Git. Decision inputs that must remain reproducible — the active draft strategy, named strategy snapshots, production Yahoo rankings, and player overrides — are tracked.
+Secrets and ephemeral runtime files such as `oauth2.json`, the active league configuration, active draft state, synchronization status, raw Yahoo input, and draft logs are intentionally ignored by Git. Reproducible decision inputs such as the active draft strategy, named strategy snapshots, tracked ranking inputs, and player overrides are version controlled.
 
 ## Setup
 
@@ -138,23 +179,13 @@ Create the local league configuration from its sanitized example:
 cp config/league.example.json config/league.json
 ```
 
-The repository already contains the tracked active decision inputs `config/draft_strategy.json`, `data/yahoo_rankings_2026.csv`, and `data/player_overrides_2026.json`. Their `*.example` counterparts document the schemas and should not replace the active files during normal setup. A draft-state file should normally be created with `ff-draft-new` rather than copied manually.
+The repository contains tracked decision inputs for the 2026 draft cycle. Their `*.example` counterparts document schemas and should not replace active files during normal setup. A draft-state file should normally be created with `ff-draft-new` rather than copied manually.
 
-Keep `config/league.json` specific to league rules. User-controlled drafting philosophy lives in `config/draft_strategy.json`, including baseline position-roster targets and reusable soft preferences. Soft preferences are exposed to the Custom GPT as a strategy overlay and never reorder the deterministic baseline; every visible candidate preserves an independent `baseline_rank` so preference-driven deviations remain auditable.
+Keep `config/league.json` specific to league facts. User-controlled drafting philosophy lives in `config/draft_strategy.json`, including position-roster targets and reusable soft preferences. Those preferences are exposed to the Custom GPT as a strategy overlay and never mutate deterministic recommendation ordering.
 
-Before materially changing the active strategy, copy the current file into `config/draft_strategy_archive/` using a dated descriptive name such as `2026-09-04_rb-priority-wait-qb.json`. Named strategy snapshots are tracked so important strategy milestones remain easy to review alongside normal Git history.
+### Local Market-Data Overrides
 
-The ranking CSV schema is:
-
-```text
-Rank,Position Rank,ADP,Player Name,Position,Team,Bye,% Drafted,Yahoo Player ID,Yahoo Data As Of,Recommended Tier As Of,Recommended Tier,Manual - Tier,Yahoo Status,Yahoo Injury Note
-```
-
-`Yahoo Player ID` is the preferred stable identity when available. `Recommended Tier` is the current expert/analyst tier and is dated independently from the Yahoo market snapshot. `Manual - Tier` is the user's preserved position-relative tier and remains the deterministic tier input when populated. Compact Yahoo status/injury fields provide current risk context without embedding verbose notes or source URLs in the runtime file.
-
-### Local market-data overrides
-
-`data/player_overrides_2026.json` is the tracked active exception file for market data that became stale after the Yahoo/ADP snapshot was captured. `data/player_overrides.example.json` documents the schema, while Git history preserves the exact overrides used with each tracked rankings/strategy revision.
+`data/player_overrides_2026.json` is the tracked active exception file for market data that became stale after the Yahoo/ADP snapshot was captured.
 
 Supported ADP policies are:
 
@@ -164,30 +195,20 @@ IGNORE     preserve source ADP for auditability but exclude it from current mark
 OVERRIDE   preserve source ADP and use an explicitly supplied replacement ADP
 ```
 
-Each override is keyed by Yahoo Player ID and carries a reason and `as_of` date. `IGNORE` is preferred when material news invalidates historical ADP but there is no trustworthy replacement number. The deterministic packet exposes both effective `adp` and historical `source_adp` plus the override metadata so the AI can explain the distinction without resurrecting stale ADP as current evidence.
+Each override is keyed by Yahoo Player ID and carries a reason and `as_of` date. The deterministic packet exposes both effective `adp` and historical `source_adp` plus override metadata so the reasoning layer can explain the distinction without resurrecting stale ADP as current evidence.
 
 ## Starting a Draft Session
 
-Create a fresh mock draft:
+Create a mock draft:
 
 ```bash
 ff-draft-new --type mock --slot 4 --workspace .
 ```
 
-Create the actual league draft once the draft slot is known:
+Create the actual league draft once the slot is known:
 
 ```bash
 ff-draft-new --type actual --slot <YOUR_SLOT> --workspace .
-```
-
-A timestamp-based draft ID is generated automatically. An explicit ID may instead be supplied:
-
-```bash
-ff-draft-new \
-  --type mock \
-  --slot 4 \
-  --draft-id mock-test-01 \
-  --workspace .
 ```
 
 An existing active `draft_state.json` is protected unless replacement is explicit:
@@ -196,19 +217,17 @@ An existing active `draft_state.json` is protected unless replacement is explici
 ff-draft-new --type mock --slot 7 --replace --workspace .
 ```
 
-Creating a new session resets draft-specific state only. League configuration, rankings, and manual tiers remain reusable across drafts.
+Do not recreate or replace an actual draft after selections have started. Active state is persisted under `data/draft_state.json` and should be recovered rather than reset.
 
-## Synchronizing a Yahoo Draft
+## Synchronizing Yahoo Draft State
 
-The intended mock-draft workflow uses copied Yahoo draft-chat history as an input source.
-
-Copy a recent portion of the Yahoo draft chat, then synchronize it:
+The current CLI option is named `--yahoo-chat` because Draft Chat was the original integration format:
 
 ```bash
 pbpaste | ff-draft-update --yahoo-chat --workspace .
 ```
 
-The synchronizer processes numeric Yahoo selection blocks and ignores unrelated chat text. It supports overlapping pasted history, so copying a generous recent range is safe.
+The parser processes numeric Yahoo selection blocks and ignores unrelated text. It supports overlapping pasted history, so copying a generous recent range is safe.
 
 For each parsed selection:
 
@@ -216,106 +235,49 @@ For each parsed selection:
 - the exact next pick is resolved and recorded;
 - a future pick that skips expected history produces a synchronization error;
 - a conflicting historical pick stops synchronization rather than overwriting state;
-- ambiguous Yahoo abbreviations require an explicit user choice;
-- successful new picks are saved immediately before processing later selections.
+- ambiguous Yahoo abbreviations require explicit resolution; and
+- successful new picks are persisted before later selections are processed.
 
-Interactive ambiguity choices are read from the terminal even when Yahoo chat is piped through standard input.
+The real 2026 draft showed that Yahoo Results can provide usable numeric selection blocks when Draft Chat is unavailable. A future source-neutral ingestion interface with explicit Draft Chat and Results adapters is the highest-priority draft-sync improvement.
 
-## Draft Analysis
+## Draft Analysis and Live Workflow
 
-Run the analyzer from the workspace containing `config/` and `data/`:
+Run deterministic analysis with:
 
 ```bash
 ff-draft --workspace .
 ```
 
-The report includes:
-
-- current overall pick and drafting team;
-- the user's roster;
-- top available players;
-- Yahoo rank and ADP;
-- manual tiers and tier-scarcity signals;
-- tier coverage;
-- team roster construction;
-- open starter slots;
-- active snake-draft lookahead;
-- opponent pick opportunities; and
-- position exposure before the user's next selection.
-
-The current live workflow is intentionally two steps:
+For live use, synchronization and analysis should be chained so a failed sync cannot be followed by stale analysis:
 
 ```bash
-pbpaste | ff-draft-update --yahoo-chat --workspace .
-ff-draft --workspace .
+ffmock() {
+  pbpaste | ff-draft-update --yahoo-chat --workspace . && \
+    ff-draft --workspace .
+}
 ```
 
-This keeps synchronization and analysis loosely coupled while the live mock-draft UX is being evaluated.
+The normal draft-day stack consists of the deterministic CLI/synchronizer, `ff-gateway`, an HTTPS tunnel, the Yahoo draft UI, and the private Custom GPT. Detailed startup and failure-recovery steps live in [`docs/live-draft-runbook.md`](docs/live-draft-runbook.md).
 
-### Automatic Draft Telemetry
+## Automatic Draft Telemetry
 
-No extra command is required during a mock or actual draft. The normal create/sync/analyze/GPT workflow automatically appends analysis-ready JSONL events under:
+No extra command is required during a mock or actual draft. The normal create/sync/analyze/GPT workflow appends JSONL events under:
 
 ```text
 data/draft_logs/<draft-id>.jsonl
 ```
 
-The first event snapshots the non-secret inputs needed for later reproduction: league config, rankings, player overrides, version-controlled Custom GPT instructions/knowledge, Python version, and Git revision. Runtime events then record exact Yahoo text supplied to synchronization, pre/post-sync draft state, stale-state outcomes, manual corrections/undo, CLI decision packets, gateway decision packets served to the Custom GPT, and blocked stale-state decision attempts.
+The first event snapshots non-secret inputs needed for later reproduction, including league config, rankings, player overrides, version-controlled Custom GPT instructions/knowledge, Python version, and Git revision. Runtime events record exact Yahoo text supplied to synchronization, pre/post-sync state, synchronization failures, manual corrections/undo, CLI packets, gateway packets, and stale-state blocks.
 
-`data/draft_logs/` is ignored by Git. Raw Yahoo text is retained locally because it is useful for parser/synchronization debugging, so copied human chat text may also appear when it was part of the selected Yahoo range. Credentials and OAuth files are never captured.
+`data/draft_logs/` remains ignored by Git. This is intentional: raw Yahoo text is valuable for local debugging but can include league-member chat/usernames, and source snapshots can duplicate externally derived datasets. Credentials and OAuth files are not captured.
 
-The log records the exact deterministic packet supplied to the GPT Action, but it does not record the GPT's prose response or the user's ChatGPT messages because those do not pass through the local read-only gateway.
-
-## Manual Pick Updates
-
-Manual entry remains available as a fallback or debugging path.
-
-Record one or more players by name or Yahoo Player ID:
-
-```bash
-ff-draft-update "Player Name" --workspace .
-ff-draft-update 12345 "Another Player" --workspace .
-```
-
-With no player arguments, the updater prompts interactively until a blank line is entered:
-
-```bash
-ff-draft-update --workspace .
-```
-
-Undo the most recently recorded selection:
-
-```bash
-ff-draft-update --undo --workspace .
-```
+For public portfolio evidence, publish a **sanitized derived artifact** rather than the raw production log. The 2026 example is [`docs/live_draft/2026-final-state.json`](docs/live_draft/2026-final-state.json).
 
 ## Private Custom GPT Integration
 
-The initial AI integration is a private Custom GPT that consumes the deterministic
-`DraftDecisionPacket` through the read-only gateway. The GPT does not own draft state and cannot
-modify selections.
+The private Custom GPT consumes the deterministic `DraftDecisionPacket` through a read-only gateway. It does not own draft state and cannot modify selections.
 
-Version-controlled Custom GPT material lives under [`docs/custom_gpt/`](docs/custom_gpt/):
-
-- [`instructions.md`](docs/custom_gpt/instructions.md) contains the concise behavior contract pasted
-  into the Custom GPT Instructions field.
-- [`yahoo_auto_draft_2026.md`](docs/custom_gpt/yahoo_auto_draft_2026.md) is a Knowledge document with
-  the longer 2026 Yahoo auto-draft observations and historical context.
-- [`README.md`](docs/custom_gpt/README.md) explains how these files are used and maintained.
-
-The instructions are intentionally kept concise. Durable behavioral constraints belong in
-`instructions.md`; supporting background that does not need to be present in every prompt belongs in
-Knowledge documents.
-
-The decision packet uses different AI candidate frontiers by phase:
-
-- `WAITING` expands its effective-market horizon dynamically with the number of selections before the user's decision and deepens RB/WR/QB/TE representation across long snake gaps.
-- ordinary `ON_CLOCK` retains the deterministic top-five, adds a compact market horizon, and guarantees minimum RB/WR/QB/TE representation when those positions are available.
-- consecutive snake-turn picks use a broader market horizon and set `context.consecutive_turn=true` so the GPT can recommend the two-pick portfolio in one response.
-
-The deterministic CLI top-five is intentionally unchanged and remains the fast manual fallback.
-
-The Action boundary is read-only:
+Version-controlled provider material lives under [`docs/custom_gpt/`](docs/custom_gpt/). The Action boundary exposes:
 
 ```text
 GET /health
@@ -323,23 +285,18 @@ GET /v1/draft/decision
 GET /openapi.json
 ```
 
-The deterministic CLI remains the required fallback if the gateway, HTTPS tunnel, Action
-authentication, or model is unavailable.
+`/v1/draft/decision` is bearer authenticated. The GPT instructions require a fresh deterministic call for current-draft decisions, restrict recommendations to packet candidates, preserve baseline-vs-strategy disagreement, and require deterministic fallback if the Action cannot retrieve current state.
+
+The decision packet uses different candidate frontiers by phase:
+
+- `WAITING` expands its market horizon with the selections before the user's next decision;
+- ordinary `ON_CLOCK` remains compact while preserving useful positional breadth;
+- consecutive snake turns set `context.consecutive_turn=true` and expose a broader two-pick frontier; and
+- `COMPLETE` prevents further draft recommendations.
 
 ## Yahoo OAuth
 
-Yahoo API access is optional for the deterministic draft and copied-chat workflow.
-
-A local `oauth2.json` may be placed in the workspace root for API integration:
-
-```json
-{
-  "consumer_key": "YOUR_YAHOO_CLIENT_ID",
-  "consumer_secret": "YOUR_YAHOO_CLIENT_SECRET"
-}
-```
-
-Never commit access tokens, refresh tokens, client secrets, `.env` files, or `oauth2.json`.
+Yahoo API access is optional for the deterministic/manual-ingestion draft workflow. A local `oauth2.json` may be placed in the workspace root for API integration and must never be committed.
 
 OAuth path precedence is:
 
@@ -361,62 +318,63 @@ Unit tests do not require Yahoo credentials or network access.
 
 ## Quality and Testing
 
-The project uses Ruff, strict mypy, pytest, branch-aware pytest-cov, pre-commit, GitHub Actions, and an AST-based test-documentation check.
+The project uses Ruff, strict mypy, pytest, branch-aware pytest-cov, pre-commit, GitHub Actions, and an AST-based behavioral test-documentation check.
 
-Tests are written around meaningful behavior and boundaries, including:
+Tests cover meaningful system boundaries including snake ownership/turns, FLEX and roster accounting, identity resolution, persistence/undo, Yahoo parsing and reconciliation, ambiguity/overlap/gap/conflict behavior, recommendation ordering, strategy context, phase-aware decision packets, specialist visibility, ADP overrides, observability, gateway authentication/read-only behavior, and Yahoo OAuth boundaries without live network calls.
 
-- snake-draft turns and ownership;
-- roster and FLEX accounting;
-- tier boundaries and scarcity;
-- player identity and duplicate protection;
-- persistence and undo;
-- Yahoo draft-chat parsing;
-- Yahoo/local-state reconciliation;
-- ambiguity, overlap, gap, and conflict behavior;
-- CLI orchestration;
-- decision-packet serialization, phase-aware candidate horizons, and consecutive-turn behavior;
-- local ADP override parsing and stale-market-signal suppression;
-- gateway authentication/read-only API behavior; and
-- Yahoo OAuth behavior without live network calls.
+The repository enforces a minimum of **90% branch-aware test coverage**. At a late-stage pre-draft quality gate, 267 tests passed along with Ruff, strict mypy, and test-documentation validation; the exact current test count may evolve after that milestone.
 
-The repository enforces a minimum of 90% branch-aware test coverage. The threshold is intentionally below 100% so coverage does not encourage low-value tests of trivial launcher or defensive boilerplate.
-
-Development commands, targeted test workflows, the full quality gate, coverage commands, and smoke-test procedures are documented in [DEVELOPMENT.md](DEVELOPMENT.md).
+Development commands and targeted test workflows are documented in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
 ## Data and Privacy
 
-The repository contains only sanitized example inputs. Real league settings, active draft state, raw Yahoo settings, OAuth credentials, and full Yahoo-derived ranking datasets should remain local.
+Public source control should contain code, documentation, sanitized examples, and intentionally tracked decision inputs only. Keep OAuth credentials, active league state, raw Yahoo settings, draft logs, copied chat text, gateway/tunnel secrets, and other runtime artifacts local.
 
-If external ranking or league data is used, the user is responsible for ensuring that storage and redistribution are permitted. The deterministic engine only requires data that conforms to the documented local schemas.
+The real 2026 `draft_state.json` should **not** be unignored merely to archive one season. A frozen sanitized copy belongs under documentation, while the active runtime path should remain ignored so a future draft cannot be accidentally committed.
+
+The raw 2026 JSONL should likewise remain private. It does not contain the gateway/Yahoo credentials in the captured session, but it does contain copied Yahoo source text and participant identifiers/chat, and its session manifest embeds complete source snapshots. Keep the raw file in a private personal backup if long-term historical preservation is desired.
+
+If external ranking or league data is stored or redistributed, the user remains responsible for the applicable source terms and permissions.
 
 ## Current Status
 
-The deterministic draft assistant is stable as the authoritative fallback, and the initial
-AI boundary is working end to end:
+The 2026 draft cycle is complete and the project is **live-draft validated**:
 
-- deterministic candidate evaluation produces a phase-aware `DraftDecisionPacket`;
-- waiting packets expand beyond long snake-turn gaps while on-clock packets remain compact and positionally broad;
-- consecutive turns expose a broader two-pick frontier through `context.consecutive_turn`;
-- local ADP policy can invalidate or replace stale source ADP without modifying the source ranking file;
-- a bearer-authenticated read-only FastAPI gateway exposes the current packet;
-- the gateway has been validated through a public HTTPS tunnel;
-- the private Custom GPT Action successfully retrieves live deterministic packets; and
-- `WAITING`, `ON_CLOCK`, and `COMPLETE` behaviors have been exercised through the Action path.
+- deterministic candidate evaluation and strategy-aware AI reasoning were exercised across repeated Yahoo mocks;
+- the bearer-authenticated FastAPI/OpenAPI gateway and private Custom GPT Action were used end to end;
+- `WAITING`, `ON_CLOCK`, consecutive-turn, and `COMPLETE` behavior were exercised;
+- the deterministic CLI remained available as the operational fallback;
+- the real draft synchronized all 150 league selections and reached `COMPLETE`;
+- fail-closed gap detection prevented incomplete Yahoo Results ranges from corrupting draft state; and
+- production telemetry preserved enough state and packet history for post-draft reconstruction.
 
-Current mock work is focused on validating turn-pair latency, long-wait target quality, current market overrides, and preserving fast failure recovery under a live draft clock.
+No immediate recommendation-engine retuning is planned from isolated draft outcomes. The real and mock histories are now calibration datasets for future work.
 
 ## Roadmap
 
-Planned progression:
+### Completed — 2026 Draft Cycle
 
-1. Continue AI-assisted mocks and capture meaningful AI-vs-deterministic divergences.
-2. Validate failure/fallback behavior for gateway, tunnel, Action authentication, and model failures.
-3. Improve opponent-specific return/survival modeling without inventing false probabilities.
-4. Add player-relationship/portfolio concepts such as backfield redundancy, handcuffs, stacks, and
-   bye-week concentration when reliable data exists.
-5. Refine compact live-draft UX and synchronization recovery under the real draft clock.
-6. Add current news/injury context as a separately sourced layer that cannot override deterministic
-   availability or draft state.
-7. Evaluate richer Yahoo API ingestion and additional agent roles only when they add measurable value.
+- deterministic draft state, roster accounting, and snake lookahead;
+- stable Yahoo player identity and synchronization/reconciliation;
+- tier/scarcity and market-timing analysis;
+- deterministic candidate evaluation;
+- explicit draft-strategy configuration with independent baseline ranking;
+- versioned `DraftDecisionPacket` and phase-aware candidate frontiers;
+- FastAPI/OpenAPI read-only gateway;
+- private Custom GPT decision layer;
+- Yahoo auto-draft research/knowledge with human-vs-auto guardrails;
+- append-only observability with source/runtime provenance;
+- repeated live Yahoo mock-draft acceptance testing; and
+- successful real-draft use on September 7, 2026.
 
-The long-term goal is an agentic fantasy-football assistant whose reasoning can evolve without weakening the reliability of the underlying draft state.
+### Next — Season and 2027 Draft Cycle
+
+1. Create a source-neutral Yahoo ingestion boundary with first-class Draft Chat and Results adapters.
+2. Build an audit/query interface over existing JSONL history rather than adding duplicate logging.
+3. Add selection provenance such as system-recommended, user-override, user-predecided, auto-drafted, or unknown.
+4. Add separately sourced, timestamped player-role/depth-chart context where reliable data exists.
+5. Calibrate marginal bench-slot utility for QB2/TE2 and realized candidate return risk from mock/real history.
+6. Improve opponent human/auto classification before applying Yahoo auto-draft tendencies more strongly.
+7. Extend the same deterministic-first architecture into in-season lineup, waiver, trade, and roster-management workflows.
+
+The long-term goal remains an agentic fantasy-football assistant whose reasoning can evolve without weakening the reliability of its underlying state, audit trail, or deterministic fallback.
